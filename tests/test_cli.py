@@ -31,13 +31,22 @@ def test_setup_logging(verbose: bool, expected_level: int) -> None:
         assert handlers[0].stream == sys.stdout
 
 
-def test_cli_dry_run_samples() -> None:
+def test_cli_dry_run_samples(tmp_path: Path) -> None:
     tasks = Path("config/samples/tasks.xml")
     schedules = Path("config/samples/schedules.xml")
+    db_file = tmp_path / "samples_test.db"
 
     result = runner.invoke(
         app,
-        ["--tasks-xml", str(tasks), "--schedule-xml", str(schedules), "--dry-run"],
+        [
+            "--tasks-xml",
+            str(tasks),
+            "--schedule-xml",
+            str(schedules),
+            "--db",
+            str(db_file),
+            "--dry-run",
+        ],
     )
     assert result.exit_code == 0
     assert "Starting MailCadence email dispatch engine" in result.output or result.exit_code == 0

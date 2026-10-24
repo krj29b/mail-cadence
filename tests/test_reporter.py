@@ -136,6 +136,39 @@ async def test_send_report_headers() -> None:
     assert len(sent_msg["Message-ID"]) > 0
 
 
+@pytest.mark.asyncio
+async def test_send_report_sender_falls_back_to_smtp_user() -> None:
+    report_settings = ReportSettings(
+        recipient="admin@example.com",
+        sender=None,
+        subject_prefix="[TEST]",
+        include_full_error_trace=True,
+    )
+    t1 = datetime(2026, 10, 17, 10, 0, tzinfo=UTC)
+    t2 = datetime(2026, 10, 17, 10, 1, tzinfo=UTC)
+    report = aggregate_summary_report([], t1, t2)
+
+    gen = ReportGenerator(template_dir=None)
+    mock_mailer = AsyncMailer(Settings(smtp_user="auth_user@example.com"), dry_run=True)
+
+    captured_sender: str | None = None
+    captured_msg: Any = None
+
+    async def mock_send(
+        msg: Any, sender: str, recipients: list[str]
+    ) -> tuple[bool, str | None, dict[str, Any]]:
+        nonlocal captured_sender, captured_msg
+        captured_sender = sender
+        captured_msg = msg
+        return True, None, {}
+
+    mock_mailer.send_single_message = mock_send  # type: ignore[method-assign]
+
+    await gen.send_report(report, report_settings, mock_mailer)
+    assert captured_sender == "auth_user@example.com"
+    assert captured_msg["From"] == "auth_user@example.com"
+
+
 def test_render_report_default_template_dir(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

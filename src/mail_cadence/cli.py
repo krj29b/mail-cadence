@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import sqlite3
 import sys
 import uuid
 from contextlib import closing
@@ -14,10 +15,12 @@ from mail_cadence.database import get_connection, init_db
 from mail_cadence.mailer import AsyncMailer, TemplateRenderer
 from mail_cadence.models import (
     PRIORITY_ORDER,
+    MailConfiguration,
     MailTask,
     Settings,
     TaskExecutionResult,
     TaskExecutionStatus,
+    WorkSchedules,
 )
 from mail_cadence.reporter import ReportGenerator, aggregate_summary_report
 from mail_cadence.repository import DatabaseRepository
@@ -33,6 +36,82 @@ app = typer.Typer(
     help="Asynchronous MailCadence email dispatch and reporting engine",
     invoke_without_command=True,
 )
+
+
+def _resolve_db_path(db: str) -> str:
+    if db == "mail_cadence.db":
+        return Settings.load().mail_cadence_db
+    return db
+
+
+def _seed_xml_if_provided(
+    conn: sqlite3.Connection,
+    tasks_xml: Path | None,
+    schedule_xml: Path | None,
+    logger: logging.Logger,
+) -> bool:
+    if not (tasks_xml and schedule_xml):
+        return True
+    try:
+        import_from_xml(conn, tasks_xml, schedule_xml, mode="upsert")
+        return True
+    except XMLValidationError as exc:
+        logger.error(f"Configuration error: {exc}")
+        return False
+    except Exception as exc:
+        logger.error(f"Unexpected error loading XML configs: {exc}")
+        return False
+
+
+def _partition_eligible_tasks(
+    mail_config: MailConfiguration,
+    work_schedules: WorkSchedules,
+    execution_states: dict[str, tuple[datetime | None, TaskExecutionStatus | None]],
+    ref_dt: datetime | None,
+    repo: DatabaseRepository,
+    batch_id: str,
+    logger: logging.Logger,
+) -> tuple[
+    list[tuple[MailTask, TokenBucketRateLimiter, asyncio.Semaphore]],
+    list[TaskExecutionResult],
+]:
+    scheduler = TaskScheduler(work_schedules)
+    eligible_tasks: list[tuple[MailTask, TokenBucketRateLimiter, asyncio.Semaphore]] = []
+    results: list[TaskExecutionResult] = []
+    window_controls: dict[
+        tuple[str, str, str], tuple[TokenBucketRateLimiter, asyncio.Semaphore]
+    ] = {}
+
+    for task in mail_config.tasks:
+        last_run, last_status = execution_states.get(task.id, (None, None))
+        eligible, window = scheduler.is_task_eligible(
+            task, reference_dt=ref_dt, last_run=last_run, last_status=last_status
+        )
+        if eligible and window is not None:
+            key = (task.schedule_ref, window.start, window.end)
+            if key not in window_controls:
+                window_controls[key] = (
+                    TokenBucketRateLimiter(
+                        window.rate_limit_per_min,
+                        initial_tokens=float(window.max_concurrency),
+                    ),
+                    asyncio.Semaphore(window.max_concurrency),
+                )
+            rate_limiter, semaphore = window_controls[key]
+            eligible_tasks.append((task, rate_limiter, semaphore))
+        else:
+            logger.info(f"Task {task.id} skipped due to schedule rules.")
+            skipped_res = TaskExecutionResult(
+                task_id=task.id,
+                status=TaskExecutionStatus.SKIPPED_SCHEDULE,
+                sent_count=0,
+                duration_ms=0.0,
+                error_details=f"Schedule '{task.schedule_ref}' not active at current time",
+            )
+            results.append(skipped_res)
+            repo.log_task_execution(skipped_res, batch_id=batch_id)
+
+    return eligible_tasks, results
 
 
 def version_callback(value: bool) -> None:
@@ -61,23 +140,20 @@ async def run_dispatch_pipeline(
     setup_logging(verbose)
     logger = logging.getLogger("mail_cadence.cli")
 
-    start_time = datetime.now(UTC)
-    logger.info(f"Starting MailCadence email dispatch engine (dry_run={dry_run}, db={db_path})...")
+    settings = Settings.load()
+    resolved_db = _resolve_db_path(db_path)
 
-    with closing(get_connection(db_path)) as conn:
+    start_time = datetime.now(UTC)
+    logger.info(
+        f"Starting MailCadence email dispatch engine (dry_run={dry_run}, db={resolved_db})..."
+    )
+
+    with closing(get_connection(resolved_db)) as conn:
         init_db(conn)
         repo = DatabaseRepository(conn)
 
-        # If tasks_xml and schedule_xml are provided, seed or update SQLite DB
-        if tasks_xml and schedule_xml:
-            try:
-                import_from_xml(conn, tasks_xml, schedule_xml, mode="upsert")
-            except XMLValidationError as exc:
-                logger.error(f"Configuration error: {exc}")
-                return 1
-            except Exception as exc:
-                logger.error(f"Unexpected error loading XML configs: {exc}")
-                return 1
+        if not _seed_xml_if_provided(conn, tasks_xml, schedule_xml, logger):
+            return 1
 
         try:
             mail_config = repo.get_mail_configuration()
@@ -91,55 +167,20 @@ async def run_dispatch_pipeline(
             logger.warning("No tasks found in database.")
             return 0
 
-        settings = Settings.load()
         renderer = TemplateRenderer()
         mailer = AsyncMailer(settings=settings, renderer=renderer, dry_run=dry_run)
-        scheduler = TaskScheduler(work_schedules)
-
         batch_id = str(uuid.uuid4())
 
-        # Evaluate task eligibility
-        eligible_tasks: list[tuple[MailTask, TokenBucketRateLimiter, asyncio.Semaphore]] = []
-        results: list[TaskExecutionResult] = []
-        window_controls: dict[
-            tuple[str, str, str], tuple[TokenBucketRateLimiter, asyncio.Semaphore]
-        ] = {}
-
-        for task in mail_config.tasks:
-            last_run, last_status = execution_states.get(task.id, (None, None))
-            eligible, window = scheduler.is_task_eligible(
-                task, reference_dt=ref_dt, last_run=last_run, last_status=last_status
-            )
-            if eligible and window is not None:
-                key = (task.schedule_ref, window.start, window.end)
-                if key not in window_controls:
-                    window_controls[key] = (
-                        TokenBucketRateLimiter(
-                            window.rate_limit_per_min,
-                            initial_tokens=float(window.max_concurrency),
-                        ),
-                        asyncio.Semaphore(window.max_concurrency),
-                    )
-                rate_limiter, semaphore = window_controls[key]
-                eligible_tasks.append((task, rate_limiter, semaphore))
-            else:
-                logger.info(f"Task {task.id} skipped due to schedule rules.")
-                skipped_res = TaskExecutionResult(
-                    task_id=task.id,
-                    status=TaskExecutionStatus.SKIPPED_SCHEDULE,
-                    sent_count=0,
-                    duration_ms=0.0,
-                    error_details=f"Schedule '{task.schedule_ref}' not active at current time",
-                )
-                results.append(skipped_res)
-                repo.log_task_execution(skipped_res, batch_id=batch_id)
+        eligible_tasks, results = _partition_eligible_tasks(
+            mail_config, work_schedules, execution_states, ref_dt, repo, batch_id, logger
+        )
 
         logger.info(
             f"Scheduled {len(eligible_tasks)} tasks for execution ({len(results)} skipped)."
         )
 
         async with mailer:
-            # Concurrent task execution using asyncio.TaskGroup
+
             async def _execute_single_task(
                 task: MailTask,
                 rate_limiter: TokenBucketRateLimiter,
@@ -164,12 +205,9 @@ async def run_dispatch_pipeline(
                         for t, rl, sem in eligible_tasks
                     ]
                 exec_results = [completed_task.result() for completed_task in tasks_tg]
-
                 results.extend(exec_results)
 
             end_time = datetime.now(UTC)
-
-            # Aggregate report and send
             report = aggregate_summary_report(results, start_time, end_time)
             reporter = ReportGenerator()
             await reporter.send_report(report, mail_config.report_settings, mailer)
@@ -299,7 +337,8 @@ def cli_import_xml(
     ] = "upsert",
 ) -> None:
     """Import tasks and schedules XML into the SQLite database."""
-    with closing(get_connection(db)) as conn:
+    resolved_db = _resolve_db_path(db)
+    with closing(get_connection(resolved_db)) as conn:
         init_db(conn)
         import_mode: Literal["upsert", "replace"] = (
             "replace" if mode.lower() == "replace" else "upsert"
@@ -308,7 +347,8 @@ def cli_import_xml(
         try:
             import_from_xml(conn, tasks_xml, schedule_xml, mode=import_mode)
             typer.echo(
-                f"Successfully imported {tasks_xml} and {schedule_xml} into {db} ({import_mode})."
+                f"Successfully imported {tasks_xml} and {schedule_xml} into "
+                f"{resolved_db} ({import_mode})."
             )
         except XMLValidationError as exc:
             typer.echo(f"XML Validation Error: {exc}", err=True)
@@ -347,12 +387,15 @@ def cli_export_xml(
     ] = "mail_cadence.db",
 ) -> None:
     """Export current SQLite database configuration to XML files."""
-    with closing(get_connection(db)) as conn:
+    resolved_db = _resolve_db_path(db)
+    with closing(get_connection(resolved_db)) as conn:
         init_db(conn)
 
         try:
             export_to_xml(conn, tasks_xml, schedule_xml)
-            typer.echo(f"Successfully exported database {db} to {tasks_xml} and {schedule_xml}.")
+            typer.echo(
+                f"Successfully exported database {resolved_db} to {tasks_xml} and {schedule_xml}."
+            )
         except Exception as exc:
             typer.echo(f"Error exporting XML: {exc}", err=True)
             raise typer.Exit(code=1) from exc
@@ -399,10 +442,11 @@ def cli_serve(
 
     from mail_cadence.web import create_app
 
-    with closing(get_connection(db)) as conn:
+    resolved_db = _resolve_db_path(db)
+    with closing(get_connection(resolved_db)) as conn:
         init_db(conn)
 
-    web_app = create_app(db_path=db, template_dir=template_dir)
+    web_app = create_app(db_path=resolved_db, template_dir=template_dir)
     uvicorn.run(web_app, host=host, port=port)
 
 

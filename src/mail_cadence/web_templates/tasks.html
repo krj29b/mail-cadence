@@ -60,7 +60,7 @@
         <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div>
             <label for="sender" class="block text-xs font-medium text-slate-300 mb-1">Sender Email *</label>
-            <input type="text" id="sender" name="sender" required placeholder="sender@example.com"
+            <input type="text" id="sender" name="sender" required value="{{ default_sender or '' }}" placeholder="{{ default_sender or 'sender@example.com' }}"
                    class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 font-mono">
           </div>
           <div>

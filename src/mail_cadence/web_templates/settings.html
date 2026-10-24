@@ -25,7 +25,7 @@
 
 <!-- Settings Split Panel Layout -->
 <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-  <!-- Left Column: Guidance & Description -->
+  <!-- Left Column: Guidance & Active SMTP Config -->
   <div class="space-y-4">
     <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-sm space-y-3">
       <div class="flex items-center gap-2 text-indigo-400">
@@ -40,6 +40,37 @@
         <p class="flex items-center gap-1.5"><i data-lucide="lock" class="w-3.5 h-3.5 text-indigo-400"></i> SMTP Header injection protected</p>
       </div>
     </div>
+
+    {% if smtp_settings %}
+    <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-sm space-y-3">
+      <div class="flex items-center gap-2 text-indigo-400">
+        <i data-lucide="server" class="w-4 h-4"></i>
+        <h2 class="text-sm font-semibold text-white">Active SMTP Server (.env)</h2>
+      </div>
+      <dl class="text-xs space-y-2 font-mono">
+        <div class="flex justify-between gap-2">
+          <dt class="text-slate-500">Host:</dt>
+          <dd class="text-slate-200">{{ smtp_settings.smtp_host }}:{{ smtp_settings.smtp_port }}</dd>
+        </div>
+        <div class="flex justify-between gap-2">
+          <dt class="text-slate-500">User:</dt>
+          <dd class="text-slate-200">{{ smtp_settings.smtp_user or "None" }}</dd>
+        </div>
+        <div class="flex justify-between gap-2">
+          <dt class="text-slate-500">Password:</dt>
+          <dd class="text-slate-200">{{ "••••••••" if smtp_settings.smtp_password else "None" }}</dd>
+        </div>
+        <div class="flex justify-between gap-2">
+          <dt class="text-slate-500">TLS / STARTTLS:</dt>
+          <dd class="text-slate-200">{{ smtp_settings.smtp_use_tls }} / {{ smtp_settings.smtp_start_tls }}</dd>
+        </div>
+        <div class="flex justify-between gap-2">
+          <dt class="text-slate-500">Timeout:</dt>
+          <dd class="text-slate-200">{{ smtp_settings.smtp_timeout }}s</dd>
+        </div>
+      </dl>
+    </div>
+    {% endif %}
   </div>
 
   <!-- Right Column: Settings Form Controls -->
@@ -56,8 +87,9 @@
         <div>
           <label for="sender" class="block text-xs font-medium text-slate-300 mb-1">Sender Email (Optional)</label>
           <input type="text" id="sender" name="sender" value="{{ settings.sender or '' }}"
+                 placeholder="{{ (smtp_settings.smtp_user if smtp_settings and smtp_settings.smtp_user else 'mail-cadence-daemon@localhost') }}"
                  class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-100 font-mono placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
-          <p class="text-[11px] text-slate-500 mt-1">Custom From address for report emails. Defaults to global SMTP user if empty.</p>
+          <p class="text-[11px] text-slate-500 mt-1">Custom From address for report emails. Defaults to global SMTP user ({{ (smtp_settings.smtp_user if smtp_settings and smtp_settings.smtp_user else 'mail-cadence-daemon@localhost') }}) if empty.</p>
         </div>
 
         <div>

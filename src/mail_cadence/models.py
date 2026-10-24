@@ -1,12 +1,15 @@
 from datetime import datetime, time
 from enum import StrEnum
 from functools import cached_property, lru_cache
+from pathlib import Path
 from typing import Any, Self
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic_xml import BaseXmlModel, attr, element, wrapped
+
+_PROJECT_ROOT_ENV = Path(__file__).resolve().parents[2] / ".env"
 
 PRIORITY_ORDER: dict[str, int] = {"high": 0, "normal": 1, "low": 2}
 
@@ -202,7 +205,7 @@ class BatchSummaryReport(BaseModel):
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=(_PROJECT_ROOT_ENV, ".env"),
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -214,6 +217,7 @@ class Settings(BaseSettings):
     smtp_use_tls: bool = False
     smtp_start_tls: bool = False
     smtp_timeout: float = 30.0
+    mail_cadence_db: str = "mail_cadence.db"
 
     admin_user: str | None = None
     admin_password: str | None = None

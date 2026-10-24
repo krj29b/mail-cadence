@@ -107,10 +107,13 @@ class ReportGenerator:
         mailer: AsyncMailer,
     ) -> bool:
         html_body, txt_body = self.render_report(report, report_settings)
+        sender_addr = (
+            report_settings.sender or mailer.settings.smtp_user or "mail-cadence-daemon@localhost"
+        )
 
         msg = MIMEMultipart("alternative")
         msg["Subject"] = f"{report_settings.subject_prefix} Task Execution Summary"
-        msg["From"] = report_settings.sender or "mail-cadence-daemon@localhost"
+        msg["From"] = sender_addr
         msg["To"] = report_settings.recipient
         msg["Date"] = formatdate(localtime=True)
         msg["Message-ID"] = make_msgid()
@@ -120,7 +123,7 @@ class ReportGenerator:
 
         success, err, _ = await mailer.send_single_message(
             msg=msg,
-            sender=report_settings.sender or "mail-cadence-daemon@localhost",
+            sender=sender_addr,
             recipients=[report_settings.recipient],
         )
 

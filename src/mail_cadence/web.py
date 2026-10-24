@@ -34,11 +34,20 @@ from mail_cadence.repository import DatabaseRepository
 security = HTTPBasic(auto_error=False)
 
 
+def _get_settings(request: Request) -> Settings:
+    custom: Settings | None = getattr(request.app.state, "custom_settings", None)
+    if custom is not None:
+        return custom
+    loaded = Settings.load()
+    request.app.state.settings = loaded
+    return loaded
+
+
 def verify_credentials(
     request: Request,
     credentials: HTTPBasicCredentials | None = Depends(security),
 ) -> None:
-    settings: Settings = getattr(request.app.state, "settings", None) or Settings.load()
+    settings = _get_settings(request)
     admin_user = settings.admin_user
     admin_password = settings.admin_password
 
@@ -135,17 +144,24 @@ def list_tasks(
 ) -> Response:
     tasks = repo.get_mail_tasks()
     schedules = repo.get_work_schedules().schedules
+    default_sender = _get_settings(request).smtp_user or ""
     return templates.TemplateResponse(
         request=request,
         name="tasks.html",
-        context={"active_page": "tasks", "tasks": tasks, "schedules": schedules},
+        context={
+            "active_page": "tasks",
+            "tasks": tasks,
+            "schedules": schedules,
+            "default_sender": default_sender,
+        },
     )
 
 
-def _build_task_from_form_dict(form_dict: dict[str, Any]) -> MailTask:
+def _build_task_from_form_dict(form_dict: dict[str, Any], default_sender: str = "") -> MailTask:
     task_id = str(form_dict.get("id", ""))
     schedule_ref = str(form_dict.get("schedule_ref", ""))
-    sender = str(form_dict.get("sender", ""))
+    sender_raw = str(form_dict.get("sender", ""))
+    sender = sender_raw if sender_raw.strip() else default_sender
     priority = str(form_dict.get("priority", "normal"))
     max_retries = int(form_dict.get("max_retries", 3))
     subject = str(form_dict.get("subject", ""))
@@ -178,10 +194,11 @@ async def save_task(
     request: Request,
     repo: DatabaseRepository = Depends(get_repo),
 ) -> Response:
+    default_sender = _get_settings(request).smtp_user or ""
     try:
         form_data = await request.form()
         form_dict = {k: v for k, v in form_data.items()}
-        task = _build_task_from_form_dict(form_dict)
+        task = _build_task_from_form_dict(form_dict, default_sender=default_sender)
         repo.save_single_task(task)
     except (ValidationError, ValueError, json.JSONDecodeError) as exc:
         raise HTTPException(
@@ -198,6 +215,7 @@ async def save_task(
             "active_page": "tasks",
             "tasks": tasks,
             "schedules": schedules,
+            "default_sender": default_sender,
             "message": f"Task '{task.id}' saved successfully.",
         },
     )
@@ -355,10 +373,15 @@ def view_settings(
     repo: DatabaseRepository = Depends(get_repo),
 ) -> Response:
     report_settings = repo.get_report_settings()
+    smtp_settings = _get_settings(request)
     return templates.TemplateResponse(
         request=request,
         name="settings.html",
-        context={"active_page": "settings", "settings": report_settings},
+        context={
+            "active_page": "settings",
+            "settings": report_settings,
+            "smtp_settings": smtp_settings,
+        },
     )
 
 
@@ -389,12 +412,14 @@ async def save_settings(
         ) from exc
 
     report_settings = repo.get_report_settings()
+    smtp_settings = _get_settings(request)
     return templates.TemplateResponse(
         request=request,
         name="settings.html",
         context={
             "active_page": "settings",
             "settings": report_settings,
+            "smtp_settings": smtp_settings,
             "message": "Report settings updated successfully.",
         },
     )
@@ -478,7 +503,7 @@ async def run_single_task(
         )
 
     async with lock:
-        settings = getattr(request.app.state, "settings", None) or Settings.load()
+        settings = _get_settings(request)
         template_dir = getattr(request.app.state, "template_dir", ".")
         renderer = TemplateRenderer(template_dir=template_dir)
         mailer = AsyncMailer(settings=settings, renderer=renderer)
@@ -519,6 +544,7 @@ def create_app(
     )
     app.state.db_path = str(db_path)
     app.state.template_dir = str(template_dir)
+    app.state.custom_settings = settings
     app.state.settings = settings or Settings.load()
     app.state.dispatch_lock = asyncio.Lock()
     app.include_router(router)

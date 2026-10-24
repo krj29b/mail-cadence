@@ -161,6 +161,44 @@ def test_tasks_crud_and_validation(client: TestClient) -> None:
     assert del_resp404.status_code == 404
 
 
+def test_tasks_default_sender_from_settings(tmp_db_path: Path, tmp_path: Path) -> None:
+    custom_settings = Settings(
+        smtp_host="smtp.example.com",
+        smtp_port=587,
+        smtp_user="default_sender@example.com",
+        admin_user=None,
+        admin_password=None,
+    )
+    app = create_app(db_path=tmp_db_path, template_dir=tmp_path, settings=custom_settings)
+    c = TestClient(app)
+
+    resp = c.get("/tasks")
+    assert resp.status_code == 200
+    assert "default_sender@example.com" in resp.text
+
+    # Submit task with empty sender -> falls back to settings.smtp_user
+    create_resp = c.post(
+        "/tasks",
+        data={
+            "id": "task_default_sender",
+            "schedule_ref": "sched_default",
+            "sender": "",
+            "subject": "Default Sender Test",
+            "body_format": "html",
+            "body_template_path": "tpl.html",
+            "to": "u1@example.com",
+        },
+    )
+    assert create_resp.status_code == 200
+
+    conn = get_connection(tmp_db_path)
+    repo = DatabaseRepository(conn)
+    saved_task = repo.get_mail_task("task_default_sender")
+    conn.close()
+    assert saved_task is not None
+    assert saved_task.sender == "default_sender@example.com"
+
+
 def test_task_preview_and_path_traversal_blocking(
     client: TestClient, tmp_path: Path, tmp_db_path: Path
 ) -> None:
@@ -260,6 +298,7 @@ def test_settings_view_and_update(client: TestClient) -> None:
     view_resp = client.get("/settings")
     assert view_resp.status_code == 200
     assert "admin@example.com" in view_resp.text
+    assert "Active SMTP Server (.env)" in view_resp.text
 
     post_resp = client.post(
         "/settings",

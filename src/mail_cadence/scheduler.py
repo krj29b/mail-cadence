@@ -107,6 +107,36 @@ class TaskScheduler:
             s.id: s for s in self.work_schedules.schedules
         }
 
+    def _normalize_dt(self, dt: datetime | None, default_tz: ZoneInfo | None = None) -> datetime:
+        tz = default_tz or self.timezone
+        if dt is None:
+            return datetime.now(self.timezone)
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=tz).astimezone(self.timezone)
+        return dt.astimezone(self.timezone)
+
+    def _get_window_bounds(
+        self, window: HourWindow, reference_dt: datetime
+    ) -> tuple[datetime, datetime]:
+        start_t = window.start_time
+        end_t = window.end_time
+        ref_date = reference_dt.date()
+
+        if start_t <= end_t:
+            return (
+                datetime.combine(ref_date, start_t, tzinfo=self.timezone),
+                datetime.combine(ref_date, end_t, tzinfo=self.timezone),
+            )
+        if reference_dt.time() >= start_t:
+            return (
+                datetime.combine(ref_date, start_t, tzinfo=self.timezone),
+                datetime.combine(ref_date + timedelta(days=1), end_t, tzinfo=self.timezone),
+            )
+        return (
+            datetime.combine(ref_date - timedelta(days=1), start_t, tzinfo=self.timezone),
+            datetime.combine(ref_date, end_t, tzinfo=self.timezone),
+        )
+
     def is_task_eligible(
         self,
         task: MailTask,
@@ -118,45 +148,17 @@ class TaskScheduler:
         if not schedule:
             return False, None
 
-        if reference_dt is None:
-            reference_dt = datetime.now(self.timezone)
-        elif reference_dt.tzinfo is None:
-            reference_dt = reference_dt.replace(tzinfo=self.timezone)
-        else:
-            reference_dt = reference_dt.astimezone(self.timezone)
-
-        window = get_active_window(schedule, reference_dt)
+        ref_dt = self._normalize_dt(reference_dt)
+        window = get_active_window(schedule, ref_dt)
         if window is None:
             return False, None
 
-        # Check idempotency: if last execution was SUCCESS in the current window instance
         is_success = last_status == TaskExecutionStatus.SUCCESS or (
             isinstance(last_status, str) and last_status.upper() == "SUCCESS"
         )
         if is_success and last_run is not None:
-            if last_run.tzinfo is None:
-                last_run_tz = last_run.replace(tzinfo=UTC).astimezone(self.timezone)
-            else:
-                last_run_tz = last_run.astimezone(self.timezone)
-
-            start_t = window.start_time
-            end_t = window.end_time
-            ref_date = reference_dt.date()
-
-            if start_t <= end_t:
-                window_start_dt = datetime.combine(ref_date, start_t, tzinfo=self.timezone)
-                window_end_dt = datetime.combine(ref_date, end_t, tzinfo=self.timezone)
-            elif reference_dt.time() >= start_t:
-                window_start_dt = datetime.combine(ref_date, start_t, tzinfo=self.timezone)
-                window_end_dt = datetime.combine(
-                    ref_date + timedelta(days=1), end_t, tzinfo=self.timezone
-                )
-            else:
-                window_start_dt = datetime.combine(
-                    ref_date - timedelta(days=1), start_t, tzinfo=self.timezone
-                )
-                window_end_dt = datetime.combine(ref_date, end_t, tzinfo=self.timezone)
-
+            last_run_tz = self._normalize_dt(last_run, default_tz=UTC)  # type: ignore[arg-type]
+            window_start_dt, window_end_dt = self._get_window_bounds(window, ref_dt)
             if window_start_dt <= last_run_tz <= window_end_dt:
                 return False, None
 

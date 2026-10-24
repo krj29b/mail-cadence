@@ -48,10 +48,11 @@ class TemplateRenderer:
 def build_email_message(
     task: MailTask,
     body_content: str,
+    default_sender: str | None = None,
 ) -> MIMEMultipart:
     msg = MIMEMultipart("alternative")
     msg["Subject"] = task.subject
-    msg["From"] = task.sender
+    msg["From"] = task.sender or default_sender or ""
     msg["To"] = ", ".join(task.recipients.to)
     if task.recipients.cc:
         msg["Cc"] = ", ".join(task.recipients.cc)
@@ -66,6 +67,13 @@ def build_email_message(
 
     msg.attach(part)
     return msg
+
+
+def _try_int(val: Any) -> int | None:
+    try:
+        return int(val)
+    except (ValueError, TypeError):
+        return None
 
 
 class AsyncMailer:
@@ -99,41 +107,39 @@ class AsyncMailer:
             while not self._pool.empty():
                 try:
                     client = self._pool.get_nowait()
-                    if getattr(client, "is_connected", False):
-                        with contextlib.suppress(Exception):
-                            await client.quit()
+                    await self._quit_if_connected(client)
                 except asyncio.QueueEmpty:
                     break
             self._pool = None
 
     @staticmethod
+    async def _quit_if_connected(client: Any) -> None:
+        if getattr(client, "is_connected", False):
+            with contextlib.suppress(Exception):
+                await client.quit()
+
+    @staticmethod
     def _extract_smtp_code(error_val: Any) -> int | None:
         if hasattr(error_val, "code"):
-            try:
-                return int(error_val.code)
-            except (ValueError, TypeError):
-                pass
+            res = _try_int(error_val.code)
+            if res is not None:
+                return res
 
-        if isinstance(error_val, tuple) and len(error_val) > 0:
-            try:
-                return int(error_val[0])
-            except (ValueError, TypeError):
-                pass
+        if isinstance(error_val, tuple) and error_val:
+            res = _try_int(error_val[0])
+            if res is not None:
+                return res
 
         if isinstance(error_val, dict):
             code_val = error_val.get("code")
             if code_val is None:
                 code_val = error_val.get("smtp_code")
             if code_val is not None:
-                try:
-                    return int(code_val)
-                except (ValueError, TypeError):
-                    pass
+                res = _try_int(code_val)
+                if res is not None:
+                    return res
 
-        try:
-            return int(error_val)
-        except (ValueError, TypeError):
-            return None
+        return _try_int(error_val)
 
     @classmethod
     def _is_permanent_smtp_error(cls, errors: dict[str, Any]) -> bool:
@@ -159,6 +165,20 @@ class AsyncMailer:
         if not getattr(client, "is_connected", False):
             await client.connect()
 
+    def _get_pooled_or_new_client(self) -> Any:
+        if self._pool is not None:
+            with contextlib.suppress(asyncio.QueueEmpty):
+                return self._pool.get_nowait()
+        return self._get_smtp_connection()
+
+    async def _release_pooled_client(self, client: Any, keep_client: bool) -> None:
+        if client is None:
+            return
+        if keep_client and self._pool is not None and getattr(client, "is_connected", False):
+            self._pool.put_nowait(client)
+        else:
+            await self._quit_if_connected(client)
+
     @contextlib.asynccontextmanager
     async def _acquire_smtp_client(self) -> AsyncIterator[Any]:
         if self._custom_smtp_client is not None:
@@ -168,31 +188,20 @@ class AsyncMailer:
             return
 
         if self._in_context and self._pool is not None:
-            client = None
-            keep_client = False
+            client = self._get_pooled_or_new_client()
+            keep_client = True
             try:
-                try:
-                    client = self._pool.get_nowait()
-                except asyncio.QueueEmpty:
-                    client = self._get_smtp_connection()
-
-                keep_client = True
                 await self._ensure_connected(client)
                 yield client
             except aiosmtplib.SMTPServerDisconnected:
                 keep_client = False
                 raise
             except Exception:
-                if client is not None and not getattr(client, "is_connected", False):
+                if not getattr(client, "is_connected", False):
                     keep_client = False
                 raise
             finally:
-                if client is not None:
-                    if keep_client and getattr(client, "is_connected", False):
-                        self._pool.put_nowait(client)
-                    elif getattr(client, "is_connected", False):
-                        with contextlib.suppress(Exception):
-                            await client.quit()
+                await self._release_pooled_client(client, keep_client)
             return
 
         client = self._get_smtp_connection()
@@ -200,9 +209,7 @@ class AsyncMailer:
             await self._ensure_connected(client)
             yield client
         finally:
-            if getattr(client, "is_connected", False):
-                with contextlib.suppress(Exception):
-                    await client.quit()
+            await self._quit_if_connected(client)
 
     async def send_single_message(
         self,
@@ -233,40 +240,37 @@ class AsyncMailer:
         except Exception as exc:
             return False, f"Network/Connection error: {exc}", {}
 
-    async def dispatch_task(
+    def _resolve_sender(self, sender: str) -> str:
+        if sender:
+            return sender
+        return self.settings.smtp_user or ""
+
+    @classmethod
+    def _partition_partial_errors(
+        cls,
+        pending_recipients: list[str],
+        errors: dict[str, Any],
+    ) -> tuple[list[str], list[str], list[str]]:
+        failed_in_attempt = list(errors.keys())
+        succeeded = [r for r in pending_recipients if r not in failed_in_attempt]
+        perm_failed: list[str] = []
+        next_pending: list[str] = []
+        for recipient in failed_in_attempt:
+            code = cls._extract_smtp_code(errors[recipient])
+            if code is not None and 500 <= code < 600:
+                perm_failed.append(recipient)
+            else:
+                next_pending.append(recipient)
+        return succeeded, perm_failed, next_pending
+
+    async def _execute_delivery_attempts(
         self,
         task: MailTask,
-        rate_limiter: TokenBucketRateLimiter | None = None,
-    ) -> TaskExecutionResult:
-        start_time = time.monotonic()
-        all_recipients = task.recipients.all_recipients
-
-        if not all_recipients:
-            return TaskExecutionResult(
-                task_id=task.id,
-                status=TaskExecutionStatus.SUCCESS,
-                sent_count=0,
-                duration_ms=0.0,
-                error_details="No recipients defined",
-            )
-
-        # Render template
-        try:
-            context = task.get_context_dict()
-            body_content = self.renderer.render(task.body_template.template_path, context)
-            msg = build_email_message(task, body_content)
-        except Exception as exc:
-            duration_ms = (time.monotonic() - start_time) * 1000.0
-            logger.error(f"Failed to render template for task {task.id}: {exc}")
-            return TaskExecutionResult(
-                task_id=task.id,
-                status=TaskExecutionStatus.FAILED,
-                sent_count=0,
-                failed_recipients=all_recipients,
-                duration_ms=duration_ms,
-                error_details=f"Template rendering error: {exc}",
-            )
-
+        msg: MIMEMultipart,
+        sender_addr: str,
+        all_recipients: list[str],
+        rate_limiter: TokenBucketRateLimiter | None,
+    ) -> tuple[int, list[str], list[str], str | None]:
         attempts = 0
         max_attempts = max(1, task.max_retries + 1)
         last_error: str | None = None
@@ -281,27 +285,17 @@ class AsyncMailer:
 
             success, error_msg, errors = await self.send_single_message(
                 msg=msg,
-                sender=task.sender,
+                sender=sender_addr,
                 recipients=pending_recipients,
             )
 
             if success:
                 if errors:
-                    failed_in_attempt = list(errors.keys())
-                    succeeded_in_attempt = [
-                        r for r in pending_recipients if r not in failed_in_attempt
-                    ]
-                    successful_recipients.extend(succeeded_in_attempt)
-
-                    next_pending: list[str] = []
-                    for recipient in failed_in_attempt:
-                        err_val = errors[recipient]
-                        code = self._extract_smtp_code(err_val)
-                        if code is not None and 500 <= code < 600:
-                            permanently_failed_recipients.append(recipient)
-                        else:
-                            next_pending.append(recipient)
-                    pending_recipients = next_pending
+                    succeeded, perm_failed, pending_recipients = self._partition_partial_errors(
+                        pending_recipients, errors
+                    )
+                    successful_recipients.extend(succeeded)
+                    permanently_failed_recipients.extend(perm_failed)
                     last_error = error_msg
                 else:
                     successful_recipients.extend(pending_recipients)
@@ -319,16 +313,62 @@ class AsyncMailer:
                     break
 
             if attempts < max_attempts and pending_recipients:
-                # Exponential backoff: 0.5s, 1s, 2s...
                 backoff = 0.5 * (2 ** (attempts - 1))
                 await asyncio.sleep(backoff)
 
+        failed_recipients = permanently_failed_recipients + pending_recipients
+        return attempts, successful_recipients, failed_recipients, last_error
+
+    async def dispatch_task(
+        self,
+        task: MailTask,
+        rate_limiter: TokenBucketRateLimiter | None = None,
+    ) -> TaskExecutionResult:
+        start_time = time.monotonic()
+        all_recipients = task.recipients.all_recipients
+        sender_addr = self._resolve_sender(task.sender)
+
+        if not all_recipients:
+            return TaskExecutionResult(
+                task_id=task.id,
+                status=TaskExecutionStatus.SUCCESS,
+                sent_count=0,
+                duration_ms=0.0,
+                error_details="No recipients defined",
+            )
+
+        try:
+            context = task.get_context_dict()
+            body_content = self.renderer.render(task.body_template.template_path, context)
+            msg = build_email_message(
+                task,
+                body_content,
+                default_sender=self.settings.smtp_user,
+            )
+        except Exception as exc:
+            duration_ms = (time.monotonic() - start_time) * 1000.0
+            logger.error(f"Failed to render template for task {task.id}: {exc}")
+            return TaskExecutionResult(
+                task_id=task.id,
+                status=TaskExecutionStatus.FAILED,
+                sent_count=0,
+                failed_recipients=all_recipients,
+                duration_ms=duration_ms,
+                error_details=f"Template rendering error: {exc}",
+            )
+
+        (
+            attempts,
+            successful_recipients,
+            failed_recipients,
+            last_error,
+        ) = await self._execute_delivery_attempts(
+            task, msg, sender_addr, all_recipients, rate_limiter
+        )
         duration_ms = (time.monotonic() - start_time) * 1000.0
 
         sent_count = len(successful_recipients)
-        failed_recipients = permanently_failed_recipients + pending_recipients
-
-        if len(successful_recipients) == len(all_recipients):
+        if sent_count == len(all_recipients):
             status = TaskExecutionStatus.SUCCESS
             last_error = None
             failed_recipients = []
