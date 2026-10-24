@@ -403,3 +403,93 @@ async def test_web_dispatch_lock_conflict(tmp_db_path: Path, tmp_path: Path) -> 
         assert "A dispatch batch is already running." in res_task.json()["detail"]
     finally:
         app.state.dispatch_lock.release()
+
+
+def test_api_task_detail_and_edit_query(client: TestClient, tmp_db_path: Path) -> None:
+    conn = get_connection(tmp_db_path)
+    repo = DatabaseRepository(conn)
+    repo.save_single_task(
+        MailTask.model_validate(
+            {
+                "id": "interactive_task",
+                "schedule_ref": "sched_default",
+                "sender": "sender@example.com",
+                "recipients": {"to": ["user@example.com"], "cc": ["cc@example.com"]},
+                "subject": "Interactive Subject",
+                "body_template": {"format": "html", "template_path": "templates/test.html.j2"},
+                "context_variables": [{"name": "var1", "value": "val1"}],
+            }
+        )
+    )
+    conn.close()
+
+    # GET /api/tasks/{task_id} -> 200 OK
+    resp = client.get("/api/tasks/interactive_task")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["id"] == "interactive_task"
+    assert data["subject"] == "Interactive Subject"
+    assert data["body_template_path"] == "templates/test.html.j2"
+    assert data["to"] == ["user@example.com"]
+    assert data["context_variables"] == [{"name": "var1", "value": "val1"}]
+
+    # GET /api/tasks/unknown -> 404
+    resp_404 = client.get("/api/tasks/non_existent_task")
+    assert resp_404.status_code == 404
+
+    # GET /tasks?edit=interactive_task -> 200 OK pre-populated in template
+    edit_resp = client.get("/tasks?edit=interactive_task")
+    assert edit_resp.status_code == 200
+    assert 'value="interactive_task"' in edit_resp.text
+    assert "Interactive Subject" in edit_resp.text
+
+
+def test_template_discovery_and_window_status(tmp_db_path: Path, tmp_path: Path) -> None:
+    # Create sample template files
+    tpl_dir = tmp_path / "templates"
+    tpl_dir.mkdir(parents=True, exist_ok=True)
+    (tpl_dir / "welcome.html.j2").write_text("<p>Welcome {{ name }}</p>")
+    (tpl_dir / "notice.txt").write_text("Notice to {{ name }}")
+
+    conn = get_connection(tmp_db_path)
+    repo = DatabaseRepository(conn)
+    repo.save_single_task(
+        MailTask.model_validate(
+            {
+                "id": "status_task",
+                "schedule_ref": "sched_default",
+                "sender": "sender@example.com",
+                "recipients": {"to": ["user@example.com"]},
+                "subject": "Status Test",
+                "body_template": {"format": "html", "template_path": "templates/welcome.html.j2"},
+            }
+        )
+    )
+    conn.close()
+
+    app = create_app(db_path=tmp_db_path, template_dir=tmp_path)
+    c = TestClient(app)
+
+    # Check template discovery & window open indicator
+    resp = c.get("/tasks")
+    assert resp.status_code == 200
+    assert "templates/welcome.html.j2" in resp.text
+    assert "templates/notice.txt" in resp.text
+    assert "Window Open • Ready" in resp.text
+
+    # Manually log execution as SUCCESS to test Sent in Window indicator
+    conn = get_connection(tmp_db_path)
+    repo = DatabaseRepository(conn)
+    repo.log_task_execution(
+        TaskExecutionResult(
+            task_id="status_task",
+            status=TaskExecutionStatus.SUCCESS,
+            sent_count=1,
+            duration_ms=10.0,
+        )
+    )
+    conn.close()
+
+    resp2 = c.get("/tasks")
+    assert resp2.status_code == 200
+    assert "Sent in Window" in resp2.text

@@ -177,7 +177,9 @@ def test_is_task_eligible_none_datetime() -> None:
             Schedule(
                 id="SCHED-MORNING",
                 allowed_hours=[
-                    HourWindow(start="00:00", end="23:59", max_concurrency=5, rate_limit_per_min=60)
+                    HourWindow(
+                        start="00:00", end="23:59:59", max_concurrency=5, rate_limit_per_min=60
+                    )
                 ],
             )
         ],

@@ -29,21 +29,36 @@
 
 <!-- Create / Update Task Form Card -->
 <div class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-sm">
-  <details class="group">
+  <details id="task-form-details" class="group" {% if edit_task %}open{% endif %}>
     <summary class="flex items-center justify-between p-4 cursor-pointer select-none bg-slate-900/80 hover:bg-slate-800/50 transition-colors">
       <div class="flex items-center gap-2">
         <i data-lucide="plus-circle" class="w-4 h-4 text-indigo-400"></i>
         <span class="text-sm font-semibold text-white">Create / Update Task</span>
       </div>
-      <i data-lucide="chevron-down" class="w-4 h-4 text-slate-400 group-open:rotate-180 transition-transform"></i>
+      <div class="flex items-center gap-3" onclick="event.stopPropagation()">
+        {% if tasks %}
+        <div class="flex items-center gap-2 text-xs">
+          <label for="quick-load-task" class="text-slate-400 font-medium hidden sm:inline">Load Existing:</label>
+          <select id="quick-load-task" onchange="loadTaskToEdit(this.value)"
+                  class="bg-slate-950 border border-slate-800 rounded-lg px-2 py-1 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono">
+            <option value="">-- Select Task to Edit --</option>
+            {% for t in tasks %}
+              <option value="{{ t.id }}" {% if edit_task and edit_task.id == t.id %}selected{% endif %}>{{ t.id }} - {{ t.subject }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        {% endif %}
+        <i data-lucide="chevron-down" class="w-4 h-4 text-slate-400 group-open:rotate-180 transition-transform"></i>
+      </div>
     </summary>
 
     <div class="p-6 border-t border-slate-800 bg-slate-950/40">
-      <form action="/tasks" method="POST" class="space-y-4">
+      <form id="task-form" action="/tasks" method="POST" class="space-y-4">
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
             <label for="id" class="block text-xs font-medium text-slate-300 mb-1">Task ID *</label>
             <input type="text" id="id" name="id" required placeholder="e.g. daily_newsletter"
+                   value="{{ edit_task.id if edit_task else '' }}"
                    class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 font-mono">
           </div>
           <div>
@@ -51,7 +66,7 @@
             <select id="schedule_ref" name="schedule_ref" required
                     class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 font-mono">
               {% for sched in schedules %}
-                <option value="{{ sched.id }}">{{ sched.id }} - {{ sched.description or '' }}</option>
+                <option value="{{ sched.id }}" {% if edit_task and edit_task.schedule_ref == sched.id %}selected{% endif %}>{{ sched.id }} - {{ sched.description or '' }}</option>
               {% endfor %}
             </select>
           </div>
@@ -60,28 +75,28 @@
         <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div>
             <label for="sender" class="block text-xs font-medium text-slate-300 mb-1">Sender Email *</label>
-            <input type="text" id="sender" name="sender" required value="{{ default_sender or '' }}" placeholder="{{ default_sender or 'sender@example.com' }}"
+            <input type="text" id="sender" name="sender" required value="{{ edit_task.sender if edit_task else (default_sender or '') }}" placeholder="{{ default_sender or 'sender@example.com' }}"
                    class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 font-mono">
           </div>
           <div>
             <label for="priority" class="block text-xs font-medium text-slate-300 mb-1">Priority</label>
             <select id="priority" name="priority"
                     class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 font-mono">
-              <option value="high">High</option>
-              <option value="normal" selected>Normal</option>
-              <option value="low">Low</option>
+              <option value="high" {% if edit_task and edit_task.priority == 'high' %}selected{% endif %}>High</option>
+              <option value="normal" {% if not edit_task or edit_task.priority == 'normal' %}selected{% endif %}>Normal</option>
+              <option value="low" {% if edit_task and edit_task.priority == 'low' %}selected{% endif %}>Low</option>
             </select>
           </div>
           <div>
             <label for="max_retries" class="block text-xs font-medium text-slate-300 mb-1">Max Retries</label>
-            <input type="number" id="max_retries" name="max_retries" value="3" min="0"
+            <input type="number" id="max_retries" name="max_retries" value="{{ edit_task.max_retries if edit_task else 3 }}" min="0"
                    class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 font-mono">
           </div>
         </div>
 
         <div>
           <label for="subject" class="block text-xs font-medium text-slate-300 mb-1">Subject *</label>
-          <input type="text" id="subject" name="subject" required placeholder="Email Subject"
+          <input type="text" id="subject" name="subject" required placeholder="Email Subject" value="{{ edit_task.subject if edit_task else '' }}"
                  class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
         </div>
 
@@ -90,14 +105,32 @@
             <label for="body_format" class="block text-xs font-medium text-slate-300 mb-1">Format</label>
             <select id="body_format" name="body_format"
                     class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 font-mono">
-              <option value="html" selected>HTML</option>
-              <option value="text">Text</option>
+              <option value="html" {% if not edit_task or edit_task.body_template.format == 'html' %}selected{% endif %}>HTML</option>
+              <option value="text" {% if edit_task and edit_task.body_template.format == 'text' %}selected{% endif %}>Text</option>
             </select>
           </div>
           <div>
             <label for="body_template_path" class="block text-xs font-medium text-slate-300 mb-1">Template Path *</label>
-            <input type="text" id="body_template_path" name="body_template_path" required placeholder="templates/newsletter.html.j2"
-                   class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 font-mono">
+            <div class="flex gap-2">
+              <input type="text" id="body_template_path" name="body_template_path" required placeholder="templates/newsletter.html.j2"
+                     list="available-templates-list"
+                     value="{{ edit_task.body_template.template_path if edit_task else '' }}"
+                     class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 font-mono">
+              {% if available_templates %}
+              <select id="quick-template-select" onchange="if(this.value){ document.getElementById('body_template_path').value = this.value; }"
+                      class="bg-slate-950 border border-slate-800 rounded-lg px-2 py-2 text-xs text-slate-300 focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono shrink-0">
+                <option value="">Quick Pick...</option>
+                {% for tpl in available_templates %}
+                  <option value="{{ tpl }}">{{ tpl }}</option>
+                {% endfor %}
+              </select>
+              {% endif %}
+            </div>
+            <datalist id="available-templates-list">
+              {% for tpl in available_templates %}
+                <option value="{{ tpl }}"></option>
+              {% endfor %}
+            </datalist>
           </div>
         </div>
 
@@ -105,30 +138,50 @@
           <div>
             <label for="to" class="block text-xs font-medium text-slate-300 mb-1">To Recipients *</label>
             <textarea id="to" name="to" required rows="3" placeholder="user1@example.com, user2@example.com"
-                      class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 font-mono"></textarea>
+                      class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 font-mono">{{ edit_task.recipients.to | join(', ') if edit_task else '' }}</textarea>
           </div>
           <div>
             <label for="cc" class="block text-xs font-medium text-slate-300 mb-1">Cc Recipients</label>
             <textarea id="cc" name="cc" rows="3" placeholder="cc@example.com"
-                      class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 font-mono"></textarea>
+                      class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 font-mono">{{ edit_task.recipients.cc | join(', ') if edit_task else '' }}</textarea>
           </div>
           <div>
             <label for="bcc" class="block text-xs font-medium text-slate-300 mb-1">Bcc Recipients</label>
             <textarea id="bcc" name="bcc" rows="3" placeholder="bcc@example.com"
-                      class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 font-mono"></textarea>
+                      class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 font-mono">{{ edit_task.recipients.bcc | join(', ') if edit_task else '' }}</textarea>
           </div>
         </div>
 
-        <div>
-          <label for="context_variables" class="block text-xs font-medium text-slate-300 mb-1">Context Variables (JSON)</label>
-          <textarea id="context_variables" name="context_variables" rows="2" placeholder='[{"name": "company", "value": "Acme Corp"}]'
-                    class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 font-mono"></textarea>
+        <!-- Context Variables Visual & Raw Editor -->
+        <div class="space-y-2 pt-1 border-t border-slate-800/80">
+          <div class="flex items-center justify-between">
+            <label class="block text-xs font-medium text-slate-300">Context Variables</label>
+            <button type="button" onclick="addContextVarRow()"
+                    class="inline-flex items-center gap-1 text-xs font-medium text-indigo-400 hover:text-indigo-300 transition-colors">
+              <i data-lucide="plus-circle" class="w-3.5 h-3.5"></i>
+              <span>Add Variable</span>
+            </button>
+          </div>
+
+          <div id="ctx-vars-container" class="space-y-2">
+            <!-- Dynamic Key-Value Rows inserted here by JS -->
+          </div>
+
+          <details class="text-xs text-slate-500 cursor-pointer pt-1">
+            <summary class="hover:text-slate-400 select-none">Raw JSON Sync Field</summary>
+            <textarea id="context_variables" name="context_variables" rows="2" placeholder='[{"name": "company", "value": "Acme Corp"}]'
+                      class="w-full mt-1 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 font-mono">{% if edit_task %}[{% for v in edit_task.context_variables %}{"name": "{{ v.name }}", "value": "{{ v.value }}"}{% if not loop.last %}, {% endif %}{% endfor %}]{% endif %}</textarea>
+          </details>
         </div>
 
-        <div class="pt-2">
+        <div class="pt-2 flex items-center gap-3">
           <button type="submit" class="inline-flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white text-xs font-semibold px-4 py-2 rounded-lg transition-colors shadow-sm">
             <i data-lucide="save" class="w-4 h-4"></i>
             <span>Save Task</span>
+          </button>
+          <button type="button" onclick="resetTaskForm()" class="inline-flex items-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium px-4 py-2 rounded-lg transition-colors border border-slate-700">
+            <i data-lucide="rotate-ccw" class="w-4 h-4"></i>
+            <span>Reset / New Task</span>
           </button>
         </div>
       </form>
@@ -138,19 +191,28 @@
 
 <!-- Existing Tasks Table Card -->
 <div class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-sm">
-  <div class="p-4 border-b border-slate-800/80 flex items-center justify-between bg-slate-900/80">
+  <div class="p-4 border-b border-slate-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-900/80">
     <div class="flex items-center gap-2">
       <i data-lucide="layers" class="w-4 h-4 text-indigo-400"></i>
       <h2 class="text-sm font-semibold text-white">Configured Tasks</h2>
     </div>
+
+    {% if tasks %}
+    <div class="relative w-full sm:w-72">
+      <i data-lucide="search" class="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2"></i>
+      <input type="text" id="task-search-input" onkeyup="filterTasksTable()" placeholder="Search tasks by ID, subject, recipient, or schedule..."
+             class="w-full bg-slate-950 border border-slate-800 rounded-lg pl-9 pr-3 py-1.5 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-indigo-500">
+    </div>
+    {% endif %}
   </div>
 
   {% if tasks %}
   <div class="overflow-x-auto">
-    <table class="w-full text-left text-xs divide-y divide-slate-800/70">
+    <table id="configured-tasks-table" class="w-full text-left text-xs divide-y divide-slate-800/70">
       <thead class="bg-slate-950/60 text-slate-400 font-mono uppercase tracking-wider sticky top-0">
         <tr>
           <th class="py-3 px-4">ID</th>
+          <th class="py-3 px-4">Window / State</th>
           <th class="py-3 px-4">Schedule</th>
           <th class="py-3 px-4">Sender</th>
           <th class="py-3 px-4">Subject</th>
@@ -161,10 +223,11 @@
       </thead>
       <tbody class="divide-y divide-slate-800/50 text-slate-300">
         {% for task in tasks %}
-        <tr id="task-row-{{ task.id }}" class="hover:bg-slate-800/40 transition-colors">
+        {% set status_info = task_statuses.get(task.id, {}) if task_statuses else {} %}
+        <tr id="task-row-{{ task.id }}" class="task-table-row hover:bg-slate-800/40 transition-colors">
           <td class="py-3 px-4 font-mono font-medium text-white">
             <div class="flex items-center gap-2">
-              <span>{{ task.id }}</span>
+              <span class="task-id-text">{{ task.id }}</span>
               {% if task.priority == 'high' %}
                 <span class="bg-rose-500/10 text-rose-400 border border-rose-500/20 text-[10px] px-1.5 py-0.2 rounded font-mono">high</span>
               {% elif task.priority == 'low' %}
@@ -174,20 +237,63 @@
               {% endif %}
             </div>
           </td>
-          <td class="py-3 px-4 font-mono text-slate-400">{{ task.schedule_ref }}</td>
+          <td class="py-3 px-4 font-mono">
+            <div class="flex flex-col gap-1 items-start">
+              {% if status_info.get('status_key') == 'dispatched_in_window' %}
+                <span class="inline-flex items-center gap-1 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded text-[11px] font-medium"
+                      title="Last run: {{ status_info.get('last_executed_at', 'N/A') }}">
+                  <i data-lucide="check-circle-2" class="w-3 h-3 text-emerald-400 shrink-0"></i>
+                  <span>Sent in Window</span>
+                </span>
+              {% elif status_info.get('status_key') == 'eligible_now' %}
+                <span class="inline-flex items-center gap-1.5 bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 px-2 py-0.5 rounded text-[11px] font-medium">
+                  <span class="relative flex h-2 w-2">
+                    <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75"></span>
+                    <span class="relative inline-flex rounded-full h-2 w-2 bg-indigo-500"></span>
+                  </span>
+                  <span>Window Open • Ready</span>
+                </span>
+              {% else %}
+                <span class="inline-flex items-center gap-1 bg-slate-500/10 text-slate-400 border border-slate-700 px-2 py-0.5 rounded text-[11px] font-medium">
+                  <i data-lucide="clock" class="w-3 h-3 text-slate-400 shrink-0"></i>
+                  <span>Outside Window</span>
+                </span>
+              {% endif %}
+
+              <div class="flex items-center gap-1 text-[10px] text-slate-400">
+                <span class="text-slate-500">Last:</span>
+                {% set last_st = status_info.get('last_status', 'NEVER_RUN') %}
+                {% if last_st == 'SUCCESS' %}
+                  <span class="badge-success">{{ last_st }}</span>
+                {% elif last_st == 'FAILED' %}
+                  <span class="badge-failed">{{ last_st }}</span>
+                {% elif last_st == 'PARTIAL' %}
+                  <span class="badge-partial">{{ last_st }}</span>
+                {% else %}
+                  <span class="text-slate-500 font-mono">NEVER_RUN</span>
+                {% endif %}
+              </div>
+            </div>
+          </td>
+          <td class="py-3 px-4 font-mono text-slate-400 task-schedule-text">{{ task.schedule_ref }}</td>
           <td class="py-3 px-4 font-mono text-slate-400">{{ task.sender }}</td>
-          <td class="py-3 px-4 text-slate-200 font-medium">{{ task.subject }}</td>
+          <td class="py-3 px-4 text-slate-200 font-medium task-subject-text">{{ task.subject }}</td>
           <td class="py-3 px-4 font-mono text-slate-400">
             <span>{{ task.body_template.template_path }}</span>
             <span class="text-slate-500">({{ task.body_template.format }})</span>
           </td>
-          <td class="py-3 px-4 font-mono text-slate-400">
+          <td class="py-3 px-4 font-mono text-slate-400 task-recipients-text">
             <div><span class="text-slate-500">To:</span> {{ task.recipients.to | join(', ') }}</div>
             {% if task.recipients.cc %}<div><span class="text-slate-500">Cc:</span> {{ task.recipients.cc | join(', ') }}</div>{% endif %}
             {% if task.recipients.bcc %}<div><span class="text-slate-500">Bcc:</span> {{ task.recipients.bcc | join(', ') }}</div>{% endif %}
           </td>
           <td class="py-3 px-4 text-right whitespace-nowrap">
             <div class="inline-flex items-center gap-1.5">
+              <button type="button" onclick="loadTaskToEdit('{{ task.id }}')"
+                      class="inline-flex items-center gap-1 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 px-2 py-1 rounded text-xs transition-colors">
+                <i data-lucide="edit-3" class="w-3 h-3 text-indigo-400"></i>
+                <span>Edit</span>
+              </button>
               <button hx-post="/tasks/{{ task.id }}/run"
                       hx-target="#messages"
                       hx-swap="innerHTML"
@@ -222,4 +328,153 @@
   </div>
   {% endif %}
 </div>
+
+<script>
+function addContextVarRow(key = '', value = '') {
+  const container = document.getElementById('ctx-vars-container');
+  const rowId = 'ctx-row-' + Date.now() + '-' + Math.floor(Math.random() * 1000);
+  const rowHtml = `
+    <div id="${rowId}" class="flex items-center gap-2 ctx-var-row">
+      <input type="text" placeholder="Key (e.g. company)" value="${key}" oninput="syncContextVarsJson()"
+             class="ctx-key w-1/3 bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono">
+      <input type="text" placeholder="Value (e.g. Acme Corp)" value="${value}" oninput="syncContextVarsJson()"
+             class="ctx-val w-2/3 bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono">
+      <button type="button" onclick="removeContextVarRow('${rowId}')" class="p-1 text-slate-500 hover:text-rose-400 transition-colors">
+        <i data-lucide="x" class="w-4 h-4"></i>
+      </button>
+    </div>
+  `;
+  container.insertAdjacentHTML('beforeend', rowHtml);
+  if (window.lucide) { lucide.createIcons(); }
+  syncContextVarsJson();
+}
+
+function removeContextVarRow(rowId) {
+  const elem = document.getElementById(rowId);
+  if (elem) {
+    elem.remove();
+    syncContextVarsJson();
+  }
+}
+
+function syncContextVarsJson() {
+  const rows = document.querySelectorAll('.ctx-var-row');
+  const vars = [];
+  rows.forEach(r => {
+    const k = r.querySelector('.ctx-key').value.trim();
+    const v = r.querySelector('.ctx-val').value;
+    if (k) {
+      vars.push({ name: k, value: v });
+    }
+  });
+  const jsonField = document.getElementById('context_variables');
+  if (jsonField) {
+    jsonField.value = JSON.stringify(vars);
+  }
+}
+
+function renderContextVarsFromField() {
+  const container = document.getElementById('ctx-vars-container');
+  container.innerHTML = '';
+  const jsonField = document.getElementById('context_variables');
+  if (!jsonField || !jsonField.value.trim()) return;
+  try {
+    const data = JSON.parse(jsonField.value);
+    if (Array.isArray(data)) {
+      data.forEach(item => {
+        if (item.name) {
+          addContextVarRow(item.name, item.value || '');
+        }
+      });
+    }
+  } catch(e) {
+    // If not valid JSON, leave container empty
+  }
+}
+
+async function loadTaskToEdit(taskId) {
+  if (!taskId) return;
+  try {
+    const resp = await fetch('/api/tasks/' + encodeURIComponent(taskId));
+    if (!resp.ok) {
+      alert('Failed to fetch task data: ' + resp.statusText);
+      return;
+    }
+    const task = await resp.json();
+
+    document.getElementById('id').value = task.id || '';
+    document.getElementById('schedule_ref').value = task.schedule_ref || '';
+    document.getElementById('sender').value = task.sender || '';
+    document.getElementById('priority').value = task.priority || 'normal';
+    document.getElementById('max_retries').value = task.max_retries !== undefined ? task.max_retries : 3;
+    document.getElementById('subject').value = task.subject || '';
+    document.getElementById('body_format').value = task.body_format || (task.body_template ? task.body_template.format : 'html');
+    document.getElementById('body_template_path').value = task.body_template_path || (task.body_template ? task.body_template.template_path : '');
+
+    const toArr = task.to || (task.recipients ? task.recipients.to : []);
+    const ccArr = task.cc || (task.recipients ? task.recipients.cc : []);
+    const bccArr = task.bcc || (task.recipients ? task.recipients.bcc : []);
+
+    document.getElementById('to').value = Array.isArray(toArr) ? toArr.join(', ') : toArr;
+    document.getElementById('cc').value = Array.isArray(ccArr) ? ccArr.join(', ') : ccArr;
+    document.getElementById('bcc').value = Array.isArray(bccArr) ? bccArr.join(', ') : bccArr;
+
+    const ctxVars = task.context_variables || [];
+    document.getElementById('context_variables').value = JSON.stringify(ctxVars);
+    renderContextVarsFromField();
+
+    const quickSelect = document.getElementById('quick-load-task');
+    if (quickSelect) { quickSelect.value = taskId; }
+
+    const formDetails = document.getElementById('task-form-details');
+    if (formDetails) {
+      formDetails.open = true;
+      formDetails.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  } catch (err) {
+    console.error('Error loading task:', err);
+  }
+}
+
+function resetTaskForm() {
+  document.getElementById('id').value = '';
+  document.getElementById('subject').value = '';
+  document.getElementById('body_template_path').value = '';
+  document.getElementById('to').value = '';
+  document.getElementById('cc').value = '';
+  document.getElementById('bcc').value = '';
+  document.getElementById('priority').value = 'normal';
+  document.getElementById('body_format').value = 'html';
+  document.getElementById('max_retries').value = '3';
+  document.getElementById('context_variables').value = '';
+  document.getElementById('ctx-vars-container').innerHTML = '';
+
+  const quickSelect = document.getElementById('quick-load-task');
+  if (quickSelect) { quickSelect.value = ''; }
+}
+
+function filterTasksTable() {
+  const input = document.getElementById('task-search-input');
+  if (!input) return;
+  const filter = input.value.toLowerCase().trim();
+  const rows = document.querySelectorAll('.task-table-row');
+
+  rows.forEach(row => {
+    const taskId = row.querySelector('.task-id-text')?.textContent.toLowerCase() || '';
+    const schedule = row.querySelector('.task-schedule-text')?.textContent.toLowerCase() || '';
+    const subject = row.querySelector('.task-subject-text')?.textContent.toLowerCase() || '';
+    const recipients = row.querySelector('.task-recipients-text')?.textContent.toLowerCase() || '';
+
+    if (taskId.includes(filter) || schedule.includes(filter) || subject.includes(filter) || recipients.includes(filter)) {
+      row.style.display = '';
+    } else {
+      row.style.display = 'none';
+    }
+  });
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  renderContextVarsFromField();
+});
+</script>
 {% endblock %}

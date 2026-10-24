@@ -30,6 +30,7 @@ from mail_cadence.models import (
     WorkSchedules,
 )
 from mail_cadence.repository import DatabaseRepository
+from mail_cadence.scheduler import TaskScheduler, get_active_window
 
 security = HTTPBasic(auto_error=False)
 
@@ -72,6 +73,77 @@ def verify_credentials(
                 detail="Unauthorized",
                 headers={"WWW-Authenticate": "Basic"},
             )
+
+
+def _discover_available_templates(template_dir: str | Path) -> list[str]:
+    base_path = Path(template_dir)
+    if not base_path.exists() or not base_path.is_dir():
+        return []
+    templates_found: list[str] = []
+    valid_extensions = {".j2", ".html", ".htm", ".txt"}
+    for path in base_path.rglob("*"):
+        if path.is_file() and path.suffix.lower() in valid_extensions:
+            rel_parts = path.relative_to(base_path).parts
+            if any(
+                p.startswith(".") or p in ("__pycache__", "node_modules", "venv") for p in rel_parts
+            ):
+                continue
+            templates_found.append(path.relative_to(base_path).as_posix())
+    return sorted(templates_found)
+
+
+def _is_dispatched_in_window(
+    scheduler: TaskScheduler,
+    window: Any,
+    last_run: Any,
+    last_status: Any,
+    ref_dt: Any,
+) -> bool:
+    if window is None or last_run is None or last_status != TaskExecutionStatus.SUCCESS:
+        return False
+    w_start, w_end = scheduler._get_window_bounds(window, ref_dt)
+    last_run_tz = scheduler._normalize_dt(last_run)
+    return w_start <= last_run_tz <= w_end
+
+
+def _get_tasks_window_status(
+    repo: DatabaseRepository,
+    tasks: list[MailTask],
+    work_schedules: WorkSchedules,
+) -> dict[str, dict[str, Any]]:
+    scheduler = TaskScheduler(work_schedules)
+    states = repo.get_task_execution_states()
+    schedule_map = {s.id: s for s in work_schedules.schedules}
+    ref_dt = scheduler._normalize_dt(None)
+    statuses: dict[str, dict[str, Any]] = {}
+
+    for task in tasks:
+        last_run, last_status = states.get(task.id, (None, None))
+        schedule = schedule_map.get(task.schedule_ref)
+        window = get_active_window(schedule, ref_dt) if schedule else None
+        eligible, _ = scheduler.is_task_eligible(
+            task, reference_dt=ref_dt, last_run=last_run, last_status=last_status
+        )
+
+        dispatched_in_window = _is_dispatched_in_window(
+            scheduler, window, last_run, last_status, ref_dt
+        )
+        status_key = (
+            "dispatched_in_window"
+            if dispatched_in_window
+            else ("eligible_now" if window is not None else "waiting_window")
+        )
+
+        statuses[task.id] = {
+            "status_key": status_key,
+            "has_active_window": window is not None,
+            "dispatched_in_window": dispatched_in_window,
+            "eligible_now": eligible,
+            "last_status": last_status.value if last_status else "NEVER_RUN",
+            "last_executed_at": last_run.isoformat() if last_run else None,
+        }
+
+    return statuses
 
 
 PACKAGE_TEMPLATES_DIR = Path(__file__).parent / "web_templates"
@@ -137,14 +209,44 @@ def dashboard(
     )
 
 
+@router.get("/api/tasks/{task_id}", response_class=JSONResponse)
+def get_api_task(
+    task_id: str,
+    repo: DatabaseRepository = Depends(get_repo),
+) -> dict[str, Any]:
+    task = repo.get_mail_task(task_id)
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Task '{task_id}' not found",
+        )
+    task_dict = task.model_dump(mode="json")
+    task_dict["body_format"] = task.body_template.format
+    task_dict["body_template_path"] = task.body_template.template_path
+    task_dict["to"] = task.recipients.to
+    task_dict["cc"] = task.recipients.cc
+    task_dict["bcc"] = task.recipients.bcc
+    return task_dict
+
+
 @router.get("/tasks", response_class=HTMLResponse)
 def list_tasks(
     request: Request,
+    edit: str | None = Query(None),
     repo: DatabaseRepository = Depends(get_repo),
 ) -> Response:
     tasks = repo.get_mail_tasks()
-    schedules = repo.get_work_schedules().schedules
+    work_schedules = repo.get_work_schedules()
+    schedules = work_schedules.schedules
     default_sender = _get_settings(request).smtp_user or ""
+    template_dir = getattr(request.app.state, "template_dir", ".")
+    available_templates = _discover_available_templates(template_dir)
+    task_statuses = _get_tasks_window_status(repo, tasks, work_schedules)
+
+    edit_task: MailTask | None = None
+    if edit:
+        edit_task = repo.get_mail_task(edit)
+
     return templates.TemplateResponse(
         request=request,
         name="tasks.html",
@@ -153,6 +255,9 @@ def list_tasks(
             "tasks": tasks,
             "schedules": schedules,
             "default_sender": default_sender,
+            "available_templates": available_templates,
+            "task_statuses": task_statuses,
+            "edit_task": edit_task,
         },
     )
 
@@ -171,7 +276,9 @@ def _build_task_from_form_dict(form_dict: dict[str, Any], default_sender: str = 
     to_list = parse_email_list(str(form_dict.get("to", "")))
     cc_list = parse_email_list(str(form_dict.get("cc", "")))
     bcc_list = parse_email_list(str(form_dict.get("bcc", "")))
-    context_vars = parse_context_vars(str(form_dict.get("context_variables", "")))
+
+    ctx_vars_raw = str(form_dict.get("context_variables", ""))
+    context_vars = parse_context_vars(ctx_vars_raw)
 
     return MailTask(
         id=task_id,
@@ -207,7 +314,12 @@ async def save_task(
         ) from exc
 
     tasks = repo.get_mail_tasks()
-    schedules = repo.get_work_schedules().schedules
+    work_schedules = repo.get_work_schedules()
+    schedules = work_schedules.schedules
+    template_dir = getattr(request.app.state, "template_dir", ".")
+    available_templates = _discover_available_templates(template_dir)
+    task_statuses = _get_tasks_window_status(repo, tasks, work_schedules)
+
     return templates.TemplateResponse(
         request=request,
         name="tasks.html",
@@ -216,6 +328,8 @@ async def save_task(
             "tasks": tasks,
             "schedules": schedules,
             "default_sender": default_sender,
+            "available_templates": available_templates,
+            "task_statuses": task_statuses,
             "message": f"Task '{task.id}' saved successfully.",
         },
     )
