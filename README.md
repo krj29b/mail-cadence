@@ -169,6 +169,80 @@ make audit
 make quality-gate
 ```
 
+## When to Use `mail-cadence` (Practical Use Cases)
+
+`mail-cadence` is designed for environments where plain `cron` scripts lack state tracking, rate control, and observability, while full distributed task queues (`Celery` + `Redis` + `PostgreSQL`) introduce unnecessary operational overhead.
+
+* **Scheduled Infrastructure & Telemetry Digests:** Dispatch daily or shift-based operational reports (e.g., disk/log audits, security scan summaries, SCADA/IoT telemetry aggregations, or energy yield forecasts) strictly within designated time windows. Because window execution is idempotent, `mail-cadence` can be invoked repeatedly by `cron` or `systemd.timer` (e.g., every 10 minutes to wait for upstream data availability) while guaranteeing the report is sent **at most once** per active window.
+* **SMTP Rate-Limit Protection (Paced Dispatch):** Standard corporate and ISP SMTP relays (such as Microsoft 365, Google Workspace, or local Postfix instances) enforce strict per-minute message caps and concurrent connection limits. `mail-cadence` paces outgoing batches using a per-window `TokenBucketRateLimiter` (`rate_limit_per_min`) and `asyncio.Semaphore` (`max_concurrency`), preventing `421`/`451` throttling errors and account lockouts.
+* **Legacy System & ERP Email Gateway via XML:** Many industrial, billing, and legacy enterprise workflows export batch definitions as XML files to a shared directory rather than calling REST APIs. The `import-xml` (`upsert` / `replace`) command validates these definitions with `defusedxml` and `pydantic-xml` before syncing them into SQLite for scheduled delivery.
+* **GitOps-Driven Internal Notifications:** Teams can version-control their communication schedules (`schedules.xml`) and task definitions (`tasks.xml`) in Git—enforcing business-hours-only delivery (`days_of_week="mon,tue,wed,thu,fri"`)—while operators use the built-in FastAPI + HTMX panel (`mail-cadence serve`) to preview Jinja2 templates, inspect execution logs, or trigger ad-hoc runs.
+* **Zero-Broker Sidecar for Lightweight Applications:** Acts as a self-contained email subsystem backed by a single SQLite (WAL) file for on-premise or single-node deployments where data privacy and minimal RAM footprint are required.
+
+---
+
+## Programmatic Integration (Python API)
+
+In addition to the CLI and XML workflows, external Python scripts (e.g., data pipelines, monitoring jobs, or forecasting engines) can dynamically inject or update task context variables in SQLite right before triggering the dispatch pipeline:
+
+```python
+import asyncio
+from contextlib import closing
+from datetime import date
+
+from mail_cadence.cli import run_dispatch_pipeline
+from mail_cadence.database import get_connection, init_db
+from mail_cadence.models import BodyTemplate, ContextVar, MailTask, Recipients
+from mail_cadence.repository import DatabaseRepository
+
+DB_PATH = "mail_cadence.db"
+
+
+def update_daily_report_task(metrics: dict[str, str]) -> None:
+    """Upsert a task with fresh runtime metrics into SQLite."""
+    with closing(get_connection(DB_PATH)) as conn:
+        init_db(conn)
+        repo = DatabaseRepository(conn)
+
+        task = MailTask(
+            id="daily_system_digest",
+            schedule_ref="morning_ops_window",
+            priority="normal",
+            max_retries=3,
+            sender="ops-noreply@example.com",
+            recipients=Recipients(to=["admin-team@example.com"]),
+            subject=f"Daily System Digest — {date.today().isoformat()}",
+            body_template=BodyTemplate(
+                format="html",
+                template_path="daily_digest.html.j2",
+            ),
+            context_variables=[
+                ContextVar(name=key, value=val) for key, val in metrics.items()
+            ],
+        )
+        repo.save_single_task(task)
+
+
+async def main() -> None:
+    # 1. Inject dynamic values computed by an upstream pipeline
+    update_daily_report_task(
+        {
+            "report_date": date.today().isoformat(),
+            "disk_usage_pct": "68.4%",
+            "anomalies_detected": "0",
+        }
+    )
+
+    # 2. Run the scheduler & SMTP dispatch pipeline (respects active HourWindows)
+    exit_code = await run_dispatch_pipeline(db_path=DB_PATH, dry_run=False)
+    print(f"Dispatch finished with exit code: {exit_code}")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+
 ---
 
 ## Architectural Deep Dive
