@@ -6,7 +6,13 @@ import aiosmtplib
 import jinja2
 import pytest
 
-from mail_cadence.mailer import AsyncMailer, TemplateRenderer, build_email_message
+from mail_cadence.mailer import (
+    AsyncMailer,
+    TemplateRenderer,
+    _extract_sender_domain,
+    _html_to_plain_text,
+    build_email_message,
+)
 from mail_cadence.models import BodyTemplate, MailTask, Recipients, Settings, TaskExecutionStatus
 
 
@@ -45,7 +51,86 @@ def test_build_email_message_headers() -> None:
     assert msg["Date"] is not None
     assert len(msg["Date"]) > 0
     assert msg["Message-ID"] is not None
-    assert len(msg["Message-ID"]) > 0
+    assert msg["Message-ID"].endswith("@example.com>")
+    assert msg["X-Mailer"] is None
+
+
+def test_extract_sender_domain_helper() -> None:
+    assert _extract_sender_domain("user@example.com") == "example.com"
+    assert _extract_sender_domain("Sender <user@sub.domain.org>") == "sub.domain.org"
+    assert _extract_sender_domain("nodomain") == "localhost"
+    assert _extract_sender_domain("") == "localhost"
+    assert _extract_sender_domain(None) == "localhost"
+
+
+def test_html_to_plain_text_helper() -> None:
+    raw_html = (
+        "<html><head><style>body { color: red; }</style><script>alert('hi');</script></head>"
+        "<body><h1>Header</h1><p>Para 1</p><div>Div line<br/>Next line</div>"
+        "<ul><li>Item 1</li><li>Item 2</li></ul>&amp; &lt;tag&gt;</body></html>"
+    )
+    plain = _html_to_plain_text(raw_html)
+    assert "color: red" not in plain
+    assert "alert" not in plain
+    assert "Header" in plain
+    assert "Para 1" in plain
+    assert "& <tag>" in plain
+    assert "<h1>" not in plain
+
+
+def test_build_email_message_html_multipart() -> None:
+    task = MailTask(
+        id="TASK-HTML",
+        max_retries=1,
+        schedule_ref="SCHED-1",
+        sender="Alice <alice@company.com>",
+        recipients=Recipients(to=["bob@example.com"], cc=["carol@example.com"]),
+        subject="HTML Email Test",
+        body_template=BodyTemplate(format="html", template_path="test.j2"),
+    )
+    html_body = "<h1>Welcome &amp; Hello!</h1><p>Line 1<br/>Line 2</p>"
+    msg = build_email_message(task, html_body)
+
+    assert msg.is_multipart()
+    assert msg.get_content_type() == "multipart/alternative"
+    assert msg["Message-ID"].endswith("@company.com>")
+    assert msg["X-Mailer"] is None
+
+    parts = list(msg.iter_parts())
+    assert len(parts) == 2
+
+    # Part 1: text/plain fallback
+    plain_part = parts[0]
+    assert plain_part.get_content_type() == "text/plain"
+    plain_text = plain_part.get_content()
+    assert "Welcome & Hello!" in plain_text
+    assert "Line 1" in plain_text
+    assert "Line 2" in plain_text
+    assert "<style>" not in plain_text
+    assert "<h1>" not in plain_text
+
+    # Part 2: text/html
+    html_part = parts[1]
+    assert html_part.get_content_type() == "text/html"
+    assert html_part.get_content().rstrip("\r\n") == html_body
+
+
+def test_build_email_message_text_singlepart() -> None:
+    task = MailTask(
+        id="TASK-TEXT",
+        max_retries=1,
+        schedule_ref="SCHED-1",
+        sender="bob@example.com",
+        recipients=Recipients(to=["alice@example.com"]),
+        subject="Text Email Test",
+        body_template=BodyTemplate(format="text", template_path="test.j2"),
+    )
+    text_body = "Hello Plain World!"
+    msg = build_email_message(task, text_body)
+
+    assert not msg.is_multipart()
+    assert msg.get_content_type() == "text/plain"
+    assert msg.get_content().rstrip("\r\n") == text_body
 
 
 def test_template_renderer_missing_template_relative(tmp_path: Path) -> None:
