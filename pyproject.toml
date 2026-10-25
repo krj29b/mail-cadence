@@ -126,7 +126,7 @@ max-statements = 40
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["S101", "PLR2004", "PLR0912", "PLR0915", "C901", "PT011"]
-"src/mail_cadence/web.py" = ["B008"]
+"src/mail_cadence/web.py" = ["B008", "PLR0913", "PLR0917", "PLR2004"]
 "src/mail_cadence/cli.py" = ["C901", "PLR0912", "PLR0915", "PLR0913", "PLR0917"]
 "src/mail_cadence/mailer.py" = ["C901", "PLR0912", "PLR0915", "PLR2004"]
 "src/mail_cadence/models.py" = ["PLR2004"]
