@@ -12,29 +12,47 @@
   </div>
 
   <!-- Global Timezone Selector Command Bar -->
-  <div>
-    <form action="/schedules/timezone" method="POST" class="flex items-center gap-2 bg-slate-900 border border-slate-800 rounded-xl p-2 px-3 shadow-sm">
+  <div class="flex flex-col sm:flex-row items-end sm:items-center gap-2">
+    <form action="/schedules/timezone" method="POST" class="flex flex-wrap items-center gap-2 bg-slate-900 border border-slate-800 rounded-xl p-2 px-3 shadow-sm">
       <div class="flex items-center gap-2 text-slate-400 text-xs">
         <i data-lucide="globe" class="w-4 h-4 text-indigo-400"></i>
         <span class="font-medium">Timezone:</span>
       </div>
-      <input type="text" id="timezone" name="timezone" value="{{ work_schedules.timezone }}" required
-             class="bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1 text-xs text-white font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500 w-28">
+      <select name="timezone" id="timezone-select"
+              class="bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1 text-xs text-white font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500 max-w-[180px]">
+        {% set current_tz = work_schedules.timezone if work_schedules else "UTC" %}
+        {% set ns = namespace(found=false) %}
+        {% if common_timezones %}
+          {% for tz in common_timezones %}
+            {% if tz == current_tz %}{% set ns.found = true %}{% endif %}
+            <option value="{{ tz }}" {% if tz == current_tz %}selected{% endif %}>{{ tz }}</option>
+          {% endfor %}
+        {% endif %}
+        {% if not ns.found and current_tz %}
+          <option value="{{ current_tz }}" selected>{{ current_tz }} (Custom)</option>
+        {% endif %}
+      </select>
       <button type="submit" class="bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold px-3 py-1 rounded-lg transition-colors border border-slate-700">
         Update
       </button>
     </form>
+    {% if tz_info %}
+    <div class="flex items-center gap-1.5 px-3 py-1 bg-slate-950 border border-slate-800 rounded-lg text-xs font-mono text-indigo-300">
+      <i data-lucide="clock" class="w-3.5 h-3.5 text-indigo-400"></i>
+      <span>{{ tz_info.display }}</span>
+    </div>
+    {% endif %}
   </div>
 </div>
 
 {% if message %}
-<div class="alert-success flex items-center gap-2">
+<div class="alert-success flex items-center gap-2 mt-4">
   <i data-lucide="check-circle" class="w-4 h-4 shrink-0"></i>
   <span>{{ message }}</span>
 </div>
 {% endif %}
 
-<div class="alert-error flex items-center gap-2 {% if not error %}hidden{% endif %}" id="schedule-error">
+<div class="alert-error flex items-center gap-2 mt-4 {% if not error %}hidden{% endif %}" id="schedule-error">
   <i data-lucide="alert-circle" class="w-4 h-4 shrink-0"></i>
   <span>{{ error }}</span>
 </div>
@@ -42,35 +60,76 @@
 <div id="messages"></div>
 
 <!-- Create / Update Schedule Form Card -->
-<div class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-sm">
-  <details class="group">
+<div class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-sm mt-4">
+  <details class="group" id="schedule-form-details" {% if edit_schedule %}open{% endif %}>
     <summary class="flex items-center justify-between p-4 cursor-pointer select-none bg-slate-900/80 hover:bg-slate-800/50 transition-colors">
-      <div class="flex items-center gap-2">
+      <div class="flex items-center gap-3">
         <i data-lucide="plus-circle" class="w-4 h-4 text-indigo-400"></i>
         <span class="text-sm font-semibold text-white">Create / Update Schedule</span>
       </div>
-      <i data-lucide="chevron-down" class="w-4 h-4 text-slate-400 group-open:rotate-180 transition-transform"></i>
+      <div class="flex items-center gap-3">
+        {% if work_schedules and work_schedules.schedules %}
+        <div class="flex items-center gap-2" onclick="event.stopPropagation()">
+          <label for="load-schedule-select" class="text-xs text-slate-400 font-medium">Load Schedule:</label>
+          <select id="load-schedule-select" onchange="loadScheduleToEdit(this.value)"
+                  class="bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1 text-xs text-slate-200 font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            <option value="">-- Select Schedule --</option>
+            {% for s in work_schedules.schedules %}
+            <option value="{{ s.id }}" {% if edit_schedule and edit_schedule.id == s.id %}selected{% endif %}>{{ s.id }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        {% endif %}
+        <button type="button" onclick="event.stopPropagation(); resetScheduleForm();"
+                class="text-xs text-slate-400 hover:text-white bg-slate-800 hover:bg-slate-700 px-2.5 py-1 rounded-lg border border-slate-700 transition-colors">
+          Reset / New
+        </button>
+        <i data-lucide="chevron-down" class="w-4 h-4 text-slate-400 group-open:rotate-180 transition-transform"></i>
+      </div>
     </summary>
 
     <div class="p-6 border-t border-slate-800 bg-slate-950/40">
-      <form action="/schedules" method="POST" class="space-y-4">
+      <form action="/schedules" method="POST" id="schedule-form" onsubmit="return syncVisualToRawJson()" class="space-y-4">
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
             <label for="id" class="block text-xs font-medium text-slate-300 mb-1">Schedule ID *</label>
-            <input type="text" id="id" name="id" required placeholder="e.g. business_hours"
+            <input type="text" id="id" name="id" required placeholder="e.g. business_hours" value="{{ edit_schedule.id if edit_schedule else '' }}"
                    class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 font-mono">
           </div>
           <div>
             <label for="description" class="block text-xs font-medium text-slate-300 mb-1">Description</label>
-            <input type="text" id="description" name="description" placeholder="Standard business hour dispatch window"
+            <input type="text" id="description" name="description" placeholder="Standard business hour dispatch window" value="{{ edit_schedule.description if edit_schedule and edit_schedule.description else '' }}"
                    class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
           </div>
         </div>
 
-        <div>
-          <label for="allowed_hours_json" class="block text-xs font-medium text-slate-300 mb-1">Allowed Hours (JSON HourWindows list) *</label>
-          <textarea id="allowed_hours_json" name="allowed_hours_json" required rows="3"
-                    class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 font-mono">[{"start": "08:00", "end": "18:00", "days_of_week": "*", "max_concurrency": 2, "rate_limit_per_min": 60}]</textarea>
+        <!-- Visual HourWindow Builder Section -->
+        <div class="space-y-3 pt-2">
+          <div class="flex items-center justify-between">
+            <label class="block text-xs font-medium text-slate-300">
+              Allowed Hours / Dispatch Windows *
+            </label>
+            <button type="button" onclick="toggleRawJsonView()" class="text-xs text-indigo-400 hover:text-indigo-300 transition-colors font-mono underline">
+              Toggle Raw JSON
+            </button>
+          </div>
+
+          <!-- Dynamic Visual Rows Container -->
+          <div id="hour-windows-container" class="space-y-3">
+            <!-- Window row elements will be injected here by JavaScript -->
+          </div>
+
+          <button type="button" onclick="addHourWindowRow()" class="inline-flex items-center gap-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold px-3 py-1.5 rounded-lg transition-colors border border-slate-700 shadow-sm mt-2">
+            <i data-lucide="plus" class="w-3.5 h-3.5 text-indigo-400"></i>
+            <span>+ Add Hour Window</span>
+          </button>
+
+          <!-- Hidden / Toggleable Raw JSON Textarea -->
+          <div id="raw-json-wrapper" class="hidden mt-3">
+            <label for="allowed_hours_json" class="block text-xs font-mono text-slate-400 mb-1">Raw JSON Payload:</label>
+            <textarea id="allowed_hours_json" name="allowed_hours_json" required rows="3"
+                      class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 font-mono">[{"start": "08:00", "end": "18:00", "days_of_week": "*", "max_concurrency": 2, "rate_limit_per_min": 60}]</textarea>
+          </div>
         </div>
 
         <div class="pt-2">
@@ -85,19 +144,24 @@
 </div>
 
 <!-- Existing Schedules Table Card -->
-<div class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-sm">
-  <div class="p-4 border-b border-slate-800/80 flex items-center justify-between bg-slate-900/80">
+<div class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-sm mt-6">
+  <div class="p-4 border-b border-slate-800/80 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 bg-slate-900/80">
     <div class="flex items-center gap-2">
       <i data-lucide="clock" class="w-4 h-4 text-indigo-400"></i>
       <h2 class="text-sm font-semibold text-white">Configured Schedules</h2>
     </div>
+    <div class="w-full sm:w-auto">
+      <input type="text" id="schedule-search-input" onkeyup="filterSchedulesTable()" placeholder="Search schedules by ID, description, or window..."
+             class="w-full sm:w-64 bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+    </div>
   </div>
 
-  {% if work_schedules.schedules %}
+  {% if work_schedules and work_schedules.schedules %}
   <div class="overflow-x-auto">
-    <table class="w-full text-left text-xs divide-y divide-slate-800/70">
+    <table class="w-full text-left text-xs divide-y divide-slate-800/70" id="schedules-table">
       <thead class="bg-slate-950/60 text-slate-400 font-mono uppercase tracking-wider sticky top-0">
         <tr>
+          <th class="py-3 px-4">Status</th>
           <th class="py-3 px-4">ID</th>
           <th class="py-3 px-4">Description</th>
           <th class="py-3 px-4">Allowed Hours / Dispatch Windows</th>
@@ -106,7 +170,21 @@
       </thead>
       <tbody class="divide-y divide-slate-800/50 text-slate-300">
         {% for sched in work_schedules.schedules %}
-        <tr id="schedule-row-{{ sched.id }}" class="hover:bg-slate-800/40 transition-colors">
+        {% set is_active = schedule_statuses and schedule_statuses.get(sched.id, false) %}
+        <tr id="schedule-row-{{ sched.id }}" class="schedule-table-row hover:bg-slate-800/40 transition-colors">
+          <td class="py-3 px-4 whitespace-nowrap">
+            {% if is_active %}
+            <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+              <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+              Active Now
+            </span>
+            {% else %}
+            <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-slate-800 text-slate-400 border border-slate-700">
+              <span class="w-1.5 h-1.5 rounded-full bg-slate-500"></span>
+              Inactive
+            </span>
+            {% endif %}
+          </td>
           <td class="py-3 px-4 font-mono font-medium text-white">{{ sched.id }}</td>
           <td class="py-3 px-4 text-slate-300">{{ sched.description or '-' }}</td>
           <td class="py-3 px-4 font-mono">
@@ -122,13 +200,20 @@
             </div>
           </td>
           <td class="py-3 px-4 text-right whitespace-nowrap">
-            <button hx-delete="/schedules/{{ sched.id }}"
-                    hx-target="#schedule-row-{{ sched.id }}"
-                    hx-swap="outerHTML"
-                    class="inline-flex items-center gap-1 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 px-2 py-1 rounded text-xs transition-colors">
-              <i data-lucide="trash-2" class="w-3 h-3"></i>
-              <span>Delete</span>
-            </button>
+            <div class="flex items-center justify-end gap-2">
+              <button type="button" onclick="loadScheduleToEdit('{{ sched.id }}')"
+                      class="inline-flex items-center gap-1 bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-400 border border-indigo-500/20 px-2.5 py-1 rounded text-xs font-medium transition-colors">
+                <i data-lucide="edit-3" class="w-3 h-3"></i>
+                <span>Edit</span>
+              </button>
+              <button hx-delete="/schedules/{{ sched.id }}"
+                      hx-target="#schedule-row-{{ sched.id }}"
+                      hx-swap="outerHTML"
+                      class="inline-flex items-center gap-1 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 px-2 py-1 rounded text-xs transition-colors">
+                <i data-lucide="trash-2" class="w-3 h-3"></i>
+                <span>Delete</span>
+              </button>
+            </div>
           </td>
         </tr>
         {% endfor %}
@@ -143,4 +228,284 @@
   </div>
   {% endif %}
 </div>
+
+<script>
+const DAYS_LIST = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+
+function createHourWindowRowElement(windowData = {}) {
+  const rowId = 'hw-row-' + Math.random().toString(36).substring(2, 9);
+  const start = windowData.start || '08:00';
+  const end = windowData.end || '17:00';
+  const daysRaw = (windowData.days_of_week || '*').toLowerCase().trim();
+  const maxConc = windowData.max_concurrency !== undefined ? windowData.max_concurrency : 1;
+  const rateLimit = windowData.rate_limit_per_min !== undefined ? windowData.rate_limit_per_min : 60;
+
+  const div = document.createElement('div');
+  div.id = rowId;
+  div.className = 'hw-builder-row bg-slate-950 border border-slate-800 rounded-xl p-3 space-y-2';
+
+  const selectedDays = new Set();
+  if (daysRaw === '*') {
+    DAYS_LIST.forEach(d => selectedDays.add(d));
+  } else {
+    daysRaw.split(',').forEach(d => {
+      const trimmed = d.trim();
+      if (trimmed) selectedDays.add(trimmed);
+    });
+  }
+
+  let daysPillsHtml = `
+    <button type="button" onclick="toggleEveryDayPill('${rowId}')" id="${rowId}-everyday-btn"
+            class="pill-everyday px-2 py-0.5 rounded text-[11px] font-mono border ${daysRaw === '*' ? 'bg-indigo-600 text-white border-indigo-500' : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-slate-200'} transition-colors">
+      Every Day (*)
+    </button>
+  `;
+
+  DAYS_LIST.forEach(day => {
+    const isSel = selectedDays.has(day);
+    daysPillsHtml += `
+      <button type="button" onclick="toggleDayPill('${rowId}', '${day}')" data-day="${day}"
+              class="pill-day-${day} px-2 py-0.5 rounded text-[11px] font-mono uppercase border ${isSel ? 'bg-indigo-600/30 text-indigo-300 border-indigo-500/50' : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-slate-200'} transition-colors">
+        ${day}
+      </button>
+    `;
+  });
+
+  div.innerHTML = `
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 items-center">
+      <div>
+        <label class="block text-[11px] font-medium text-slate-400 mb-1">Start Time (HH:MM)</label>
+        <input type="time" value="${start}" onchange="syncVisualToRawJson()" class="hw-input-start w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500">
+      </div>
+      <div>
+        <label class="block text-[11px] font-medium text-slate-400 mb-1">End Time (HH:MM)</label>
+        <input type="time" value="${end}" onchange="syncVisualToRawJson()" class="hw-input-end w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500">
+      </div>
+      <div>
+        <label class="block text-[11px] font-medium text-slate-400 mb-1">Max Concurrency</label>
+        <input type="number" min="1" value="${maxConc}" onchange="syncVisualToRawJson()" class="hw-input-max-conc w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500">
+      </div>
+      <div>
+        <label class="block text-[11px] font-medium text-slate-400 mb-1">Rate Limit / min</label>
+        <div class="flex items-center gap-2">
+          <input type="number" min="1" value="${rateLimit}" onchange="syncVisualToRawJson()" class="hw-input-rate-limit w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500">
+          <button type="button" onclick="removeHourWindowRow('${rowId}')" title="Remove Window" class="bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 p-1.5 rounded-lg transition-colors shrink-0">
+            <i data-lucide="trash-2" class="w-4 h-4"></i>
+          </button>
+        </div>
+      </div>
+    </div>
+    <div class="flex flex-wrap items-center gap-1.5 pt-1 border-t border-slate-900">
+      <span class="text-[11px] font-medium text-slate-400 mr-1">Days of Week:</span>
+      ${daysPillsHtml}
+    </div>
+  `;
+
+  return div;
+}
+
+function addHourWindowRow(windowData) {
+  const container = document.getElementById('hour-windows-container');
+  if (container) {
+    const rowEl = createHourWindowRowElement(windowData);
+    container.appendChild(rowEl);
+    if (window.lucide) {
+      window.lucide.createIcons();
+    }
+    syncVisualToRawJson();
+  }
+}
+
+function removeHourWindowRow(rowId) {
+  const row = document.getElementById(rowId);
+  if (row) {
+    row.remove();
+    syncVisualToRawJson();
+  }
+}
+
+function toggleEveryDayPill(rowId) {
+  const row = document.getElementById(rowId);
+  if (!row) return;
+
+  const everyDayBtn = document.getElementById(rowId + '-everyday-btn');
+  const dayBtns = row.querySelectorAll('[class*="pill-day-"]');
+
+  everyDayBtn.className = 'pill-everyday px-2 py-0.5 rounded text-[11px] font-mono border bg-indigo-600 text-white border-indigo-500 transition-colors';
+
+  dayBtns.forEach(btn => {
+    btn.className = btn.className.replace(/bg-indigo-600\/30 text-indigo-300 border-indigo-500\/50/g, 'bg-slate-900 text-slate-400 border-slate-800 hover:text-slate-200');
+  });
+
+  syncVisualToRawJson();
+}
+
+function toggleDayPill(rowId, day) {
+  const row = document.getElementById(rowId);
+  if (!row) return;
+
+  const everyDayBtn = document.getElementById(rowId + '-everyday-btn');
+  const dayBtn = row.querySelector('.pill-day-' + day);
+  if (!dayBtn) return;
+
+  const isCurrentlySel = dayBtn.className.includes('bg-indigo-600');
+
+  if (isCurrentlySel) {
+    dayBtn.className = 'pill-day-' + day + ' px-2 py-0.5 rounded text-[11px] font-mono uppercase border bg-slate-900 text-slate-400 border-slate-800 hover:text-slate-200 transition-colors';
+  } else {
+    dayBtn.className = 'pill-day-' + day + ' px-2 py-0.5 rounded text-[11px] font-mono uppercase border bg-indigo-600/30 text-indigo-300 border-indigo-500/50 transition-colors';
+  }
+
+  // Check how many days are selected
+  const activeDayBtns = row.querySelectorAll('[class*="pill-day-"].bg-indigo-600');
+  if (activeDayBtns.length === 0 || activeDayBtns.length === 7) {
+    everyDayBtn.className = 'pill-everyday px-2 py-0.5 rounded text-[11px] font-mono border bg-indigo-600 text-white border-indigo-500 transition-colors';
+    activeDayBtns.forEach(b => {
+      b.className = b.className.replace(/bg-indigo-600\/30 text-indigo-300 border-indigo-500\/50/g, 'bg-slate-900 text-slate-400 border-slate-800 hover:text-slate-200');
+    });
+  } else {
+    everyDayBtn.className = 'pill-everyday px-2 py-0.5 rounded text-[11px] font-mono border bg-slate-900 text-slate-400 border-slate-800 hover:text-slate-200 transition-colors';
+  }
+
+  syncVisualToRawJson();
+}
+
+function syncVisualToRawJson() {
+  const container = document.getElementById('hour-windows-container');
+  const rawTextarea = document.getElementById('allowed_hours_json');
+  if (!container || !rawTextarea) return true;
+
+  const rows = container.querySelectorAll('.hw-builder-row');
+  const windowsList = [];
+
+  rows.forEach(row => {
+    const startVal = row.querySelector('.hw-input-start')?.value || '08:00';
+    const endVal = row.querySelector('.hw-input-end')?.value || '17:00';
+    const maxConc = parseInt(row.querySelector('.hw-input-max-conc')?.value || '1', 10);
+    const rateLimit = parseInt(row.querySelector('.hw-input-rate-limit')?.value || '60', 10);
+
+    const everyDayBtn = row.querySelector('.pill-everyday');
+    const isEveryDay = everyDayBtn && everyDayBtn.className.includes('bg-indigo-600');
+
+    let daysStr = '*';
+    if (!isEveryDay) {
+      const selectedDays = [];
+      DAYS_LIST.forEach(d => {
+        const btn = row.querySelector('.pill-day-' + d);
+        if (btn && btn.className.includes('bg-indigo-600')) {
+          selectedDays.push(d);
+        }
+      });
+      daysStr = selectedDays.length > 0 ? selectedDays.join(',') : '*';
+    }
+
+    windowsList.push({
+      start: startVal,
+      end: endVal,
+      days_of_week: daysStr,
+      max_concurrency: isNaN(maxConc) ? 1 : maxConc,
+      rate_limit_per_min: isNaN(rateLimit) ? 60 : rateLimit
+    });
+  });
+
+  rawTextarea.value = JSON.stringify(windowsList);
+  return true;
+}
+
+function toggleRawJsonView() {
+  const wrapper = document.getElementById('raw-json-wrapper');
+  if (wrapper) {
+    wrapper.classList.toggle('hidden');
+  }
+}
+
+function resetScheduleForm() {
+  const formDetails = document.getElementById('schedule-form-details');
+  if (formDetails) formDetails.open = true;
+
+  const idInput = document.getElementById('id');
+  const descInput = document.getElementById('description');
+  const loadSelect = document.getElementById('load-schedule-select');
+
+  if (idInput) idInput.value = '';
+  if (descInput) descInput.value = '';
+  if (loadSelect) loadSelect.value = '';
+
+  const container = document.getElementById('hour-windows-container');
+  if (container) {
+    container.innerHTML = '';
+  }
+  addHourWindowRow({ start: '08:00', end: '18:00', days_of_week: '*', max_concurrency: 2, rate_limit_per_min: 60 });
+}
+
+async function loadScheduleToEdit(scheduleId) {
+  if (!scheduleId) return;
+
+  const formDetails = document.getElementById('schedule-form-details');
+  if (formDetails) formDetails.open = true;
+
+  try {
+    const res = await fetch('/api/schedules/' + encodeURIComponent(scheduleId));
+    if (!res.ok) throw new Error('Failed to fetch schedule');
+    const sched = await res.json();
+
+    const idInput = document.getElementById('id');
+    const descInput = document.getElementById('description');
+    const loadSelect = document.getElementById('load-schedule-select');
+
+    if (idInput) idInput.value = sched.id || '';
+    if (descInput) descInput.value = sched.description || '';
+    if (loadSelect) loadSelect.value = sched.id || '';
+
+    const container = document.getElementById('hour-windows-container');
+    if (container) {
+      container.innerHTML = '';
+      if (sched.allowed_hours && sched.allowed_hours.length > 0) {
+        sched.allowed_hours.forEach(hw => addHourWindowRow(hw));
+      } else {
+        addHourWindowRow();
+      }
+    }
+  } catch (err) {
+    console.error('Error loading schedule:', err);
+  }
+}
+
+function filterSchedulesTable() {
+  const input = document.getElementById('schedule-search-input');
+  if (!input) return;
+  const filter = input.value.toLowerCase().trim();
+  const rows = document.querySelectorAll('.schedule-table-row');
+
+  rows.forEach(row => {
+    const text = row.innerText.toLowerCase();
+    if (text.includes(filter)) {
+      row.style.display = '';
+    } else {
+      row.style.display = 'none';
+    }
+  });
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+  const container = document.getElementById('hour-windows-container');
+
+  {% if edit_schedule and edit_schedule.allowed_hours %}
+    container.innerHTML = '';
+    {% for hw in edit_schedule.allowed_hours %}
+      addHourWindowRow({
+        start: "{{ hw.start }}",
+        end: "{{ hw.end }}",
+        days_of_week: "{{ hw.days_of_week }}",
+        max_concurrency: {{ hw.max_concurrency }},
+        rate_limit_per_min: {{ hw.rate_limit_per_min }}
+      });
+    {% endfor %}
+  {% else %}
+    if (container && container.children.length === 0) {
+      addHourWindowRow({ start: '08:00', end: '18:00', days_of_week: '*', max_concurrency: 2, rate_limit_per_min: 60 });
+    }
+  {% endif %}
+});
+</script>
 {% endblock %}

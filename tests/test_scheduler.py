@@ -460,3 +460,104 @@ def test_get_active_window_days_of_week_cross_midnight() -> None:
     # Friday 2026-10-16 at 02:00 (spans from previous day Thursday)
     dt_fri_early = datetime(2026, 10, 16, 2, 0)
     assert get_active_window(sched, dt_fri_early) is None
+
+
+def test_dst_europe_warsaw_summer_and_winter() -> None:
+    schedules = WorkSchedules(
+        timezone="Europe/Warsaw",
+        schedules=[
+            Schedule(
+                id="SCHED-WARSAW-DAY",
+                allowed_hours=[
+                    HourWindow(start="08:00", end="10:00", max_concurrency=1, rate_limit_per_min=60)
+                ],
+            )
+        ],
+    )
+    scheduler = TaskScheduler(schedules)
+    task = MailTask(
+        id="T-DST",
+        schedule_ref="SCHED-WARSAW-DAY",
+        sender="s@example.com",
+        recipients=Recipients(to=["r@example.com"]),
+        subject="Subject",
+        body_template=BodyTemplate(template_path="t.j2"),
+    )
+
+    # Summer Time (CEST, UTC+2): 08:00-10:00 CEST == 06:00-08:00 UTC
+    utc_summer_0600 = datetime(2026, 7, 15, 6, 0, tzinfo=ZoneInfo("UTC"))
+    eligible_summer_0600, w_summer = scheduler.is_task_eligible(task, reference_dt=utc_summer_0600)
+    assert eligible_summer_0600 is True
+    assert w_summer is not None
+
+    utc_summer_0559 = datetime(2026, 7, 15, 5, 59, tzinfo=ZoneInfo("UTC"))
+    eligible_summer_0559, _ = scheduler.is_task_eligible(task, reference_dt=utc_summer_0559)
+    assert eligible_summer_0559 is False
+
+    # Winter Time (CET, UTC+1): 08:00-10:00 CET == 07:00-09:00 UTC
+    utc_winter_0700 = datetime(2026, 1, 15, 7, 0, tzinfo=ZoneInfo("UTC"))
+    eligible_winter_0700, w_winter = scheduler.is_task_eligible(task, reference_dt=utc_winter_0700)
+    assert eligible_winter_0700 is True
+    assert w_winter is not None
+
+    utc_winter_0600 = datetime(2026, 1, 15, 6, 0, tzinfo=ZoneInfo("UTC"))
+    eligible_winter_0600, _ = scheduler.is_task_eligible(task, reference_dt=utc_winter_0600)
+    assert eligible_winter_0600 is False
+
+
+def test_dst_europe_warsaw_cross_midnight_transitions() -> None:
+    # Overnight window 22:00 to 04:00
+    schedules = WorkSchedules(
+        timezone="Europe/Warsaw",
+        schedules=[
+            Schedule(
+                id="SCHED-WARSAW-NIGHT",
+                allowed_hours=[
+                    HourWindow(start="22:00", end="04:00", max_concurrency=1, rate_limit_per_min=60)
+                ],
+            )
+        ],
+    )
+    scheduler = TaskScheduler(schedules)
+    task = MailTask(
+        id="T-NIGHT",
+        schedule_ref="SCHED-WARSAW-NIGHT",
+        sender="s@example.com",
+        recipients=Recipients(to=["r@example.com"]),
+        subject="Subject",
+        body_template=BodyTemplate(template_path="t.j2"),
+    )
+
+    # 1. Spring-forward transition (March 28 to March 29, 2026):
+    # Transition occurs at 02:00 CET -> 03:00 CEST on March 29.
+    # On March 28 at 23:00 Warsaw (22:00 UTC):
+    ref_spring_start = datetime(2026, 3, 28, 22, 0, tzinfo=ZoneInfo("UTC"))
+    eligible_spring_start, _ = scheduler.is_task_eligible(task, reference_dt=ref_spring_start)
+    assert eligible_spring_start is True
+
+    # Execution during spring night at 23:30 Warsaw (22:30 UTC):
+    last_run_spring = datetime(2026, 3, 28, 22, 30, tzinfo=ZoneInfo("UTC"))
+
+    # Early morning March 29 after spring-forward shift at 03:30 CEST (01:30 UTC):
+    ref_spring_morning = datetime(2026, 3, 29, 1, 30, tzinfo=ZoneInfo("UTC"))
+    eligible_spring_morning, _ = scheduler.is_task_eligible(
+        task, reference_dt=ref_spring_morning, last_run=last_run_spring, last_status="SUCCESS"
+    )
+    assert eligible_spring_morning is False
+
+    # 2. Autumn fall-back transition (October 24 to October 25, 2026):
+    # Transition occurs at 03:00 CEST -> 02:00 CET on October 25.
+    # On Oct 24 at 23:00 Warsaw (21:00 UTC):
+    ref_autumn_start = datetime(2026, 10, 24, 21, 0, tzinfo=ZoneInfo("UTC"))
+    eligible_autumn_start, _ = scheduler.is_task_eligible(task, reference_dt=ref_autumn_start)
+    assert eligible_autumn_start is True
+
+    # Execution during autumn night at 23:30 Warsaw (21:30 UTC):
+    last_run_autumn = datetime(2026, 10, 24, 21, 30, tzinfo=ZoneInfo("UTC"))
+
+    # Early morning Oct 25 after fall-back shift at 03:00 CET (02:00 UTC) in same window instance:
+    ref_autumn_morning = datetime(2026, 10, 25, 2, 0, tzinfo=ZoneInfo("UTC"))
+    eligible_autumn_morning, _ = scheduler.is_task_eligible(
+        task, reference_dt=ref_autumn_morning, last_run=last_run_autumn, last_status="SUCCESS"
+    )
+    assert eligible_autumn_morning is False
