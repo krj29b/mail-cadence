@@ -4,8 +4,10 @@ import secrets
 import sqlite3
 from collections.abc import Generator
 from contextlib import closing
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import jinja2
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, status
@@ -31,6 +33,28 @@ from mail_cadence.models import (
 )
 from mail_cadence.repository import DatabaseRepository
 from mail_cadence.scheduler import TaskScheduler, get_active_window
+
+COMMON_TIMEZONES: tuple[str, ...] = (
+    "UTC",
+    "Europe/Warsaw",
+    "Europe/London",
+    "Europe/Berlin",
+    "Europe/Paris",
+    "Europe/Madrid",
+    "Europe/Rome",
+    "Europe/Kyiv",
+    "America/New_York",
+    "America/Chicago",
+    "America/Denver",
+    "America/Los_Angeles",
+    "America/Sao_Paulo",
+    "Asia/Tokyo",
+    "Asia/Singapore",
+    "Asia/Shanghai",
+    "Asia/Dubai",
+    "Asia/Kolkata",
+    "Australia/Sydney",
+)
 
 security = HTTPBasic(auto_error=False)
 
@@ -143,6 +167,41 @@ def _get_tasks_window_status(
             "last_executed_at": last_run.isoformat() if last_run else None,
         }
 
+    return statuses
+
+
+def _get_tz_info(tz_name: str) -> dict[str, str]:
+    try:
+        tz = ZoneInfo(tz_name)
+    except (ZoneInfoNotFoundError, ValueError):
+        tz = ZoneInfo("UTC")
+        tz_name = "UTC"
+
+    now = datetime.now(tz)
+    local_time_str = now.strftime("%H:%M:%S")
+    abbrev = now.strftime("%Z")
+    offset_str = now.strftime("%z")
+    expected_offset_len = 5
+    is_standard_offset = len(offset_str) == expected_offset_len
+    formatted_offset = (
+        f"UTC{offset_str[:3]}:{offset_str[3:]}" if is_standard_offset else f"UTC{offset_str}"
+    )
+    return {
+        "timezone": tz_name,
+        "local_time": local_time_str,
+        "abbrev": abbrev,
+        "formatted_offset": formatted_offset,
+        "display": f"{local_time_str} ({abbrev}, {formatted_offset})",
+    }
+
+
+def _get_schedule_statuses(work_schedules: WorkSchedules) -> dict[str, bool]:
+    scheduler = TaskScheduler(work_schedules)
+    ref_dt = scheduler._normalize_dt(None)
+    statuses: dict[str, bool] = {}
+    for sched in work_schedules.schedules:
+        win = get_active_window(sched, ref_dt)
+        statuses[sched.id] = win is not None
     return statuses
 
 
@@ -381,16 +440,46 @@ def preview_task(
     return Response(content=rendered, media_type="text/plain")
 
 
+@router.get("/api/schedules/{schedule_id}", response_class=JSONResponse)
+def get_api_schedule(
+    schedule_id: str,
+    repo: DatabaseRepository = Depends(get_repo),
+) -> dict[str, Any]:
+    work_schedules = repo.get_work_schedules()
+    sched = next((s for s in work_schedules.schedules if s.id == schedule_id), None)
+    if not sched:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Schedule '{schedule_id}' not found",
+        )
+    return sched.model_dump(mode="json")
+
+
 @router.get("/schedules", response_class=HTMLResponse)
 def list_schedules(
     request: Request,
+    edit: str | None = Query(None),
     repo: DatabaseRepository = Depends(get_repo),
 ) -> Response:
     work_schedules = repo.get_work_schedules()
+    tz_info = _get_tz_info(work_schedules.timezone)
+    schedule_statuses = _get_schedule_statuses(work_schedules)
+
+    edit_schedule: Schedule | None = None
+    if edit:
+        edit_schedule = next((s for s in work_schedules.schedules if s.id == edit), None)
+
     return templates.TemplateResponse(
         request=request,
         name="schedules.html",
-        context={"active_page": "schedules", "work_schedules": work_schedules},
+        context={
+            "active_page": "schedules",
+            "work_schedules": work_schedules,
+            "common_timezones": COMMON_TIMEZONES,
+            "tz_info": tz_info,
+            "schedule_statuses": schedule_statuses,
+            "edit_schedule": edit_schedule,
+        },
     )
 
 
@@ -402,7 +491,7 @@ async def save_schedule(
     form = await request.form()
     schedule_id = str(form.get("id", ""))
     desc = form.get("description")
-    description = str(desc) if desc is not None else None
+    description = str(desc) if desc is not None and str(desc).strip() else None
     allowed_hours_json = str(form.get("allowed_hours_json", ""))
 
     try:
@@ -420,12 +509,18 @@ async def save_schedule(
         ) from exc
 
     work_schedules = repo.get_work_schedules()
+    tz_info = _get_tz_info(work_schedules.timezone)
+    schedule_statuses = _get_schedule_statuses(work_schedules)
+
     return templates.TemplateResponse(
         request=request,
         name="schedules.html",
         context={
             "active_page": "schedules",
             "work_schedules": work_schedules,
+            "common_timezones": COMMON_TIMEZONES,
+            "tz_info": tz_info,
+            "schedule_statuses": schedule_statuses,
             "message": f"Schedule '{schedule_id}' saved successfully.",
         },
     )
@@ -450,12 +545,18 @@ async def update_timezone(
         ) from exc
 
     work_schedules = repo.get_work_schedules()
+    tz_info = _get_tz_info(work_schedules.timezone)
+    schedule_statuses = _get_schedule_statuses(work_schedules)
+
     return templates.TemplateResponse(
         request=request,
         name="schedules.html",
         context={
             "active_page": "schedules",
             "work_schedules": work_schedules,
+            "common_timezones": COMMON_TIMEZONES,
+            "tz_info": tz_info,
+            "schedule_statuses": schedule_statuses,
             "message": f"Timezone updated to '{tz_val}'.",
         },
     )

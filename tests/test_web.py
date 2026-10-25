@@ -493,3 +493,32 @@ def test_template_discovery_and_window_status(tmp_db_path: Path, tmp_path: Path)
     resp2 = c.get("/tasks")
     assert resp2.status_code == 200
     assert "Sent in Window" in resp2.text
+
+
+def test_api_schedule_detail_edit_query_and_timezone_selector(
+    client: TestClient, tmp_db_path: Path
+) -> None:
+    # Test GET /api/schedules/{schedule_id}
+    resp = client.get("/api/schedules/sched_default")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["id"] == "sched_default"
+    assert data["description"] == "Default schedule"
+    assert len(data["allowed_hours"]) == 1
+
+    # Test GET /api/schedules/unknown -> 404
+    resp_404 = client.get("/api/schedules/non_existent_schedule")
+    assert resp_404.status_code == 404
+
+    # Test GET /schedules?edit=sched_default -> pre-populates schedule
+    edit_resp = client.get("/schedules?edit=sched_default")
+    assert edit_resp.status_code == 200
+    assert 'value="sched_default"' in edit_resp.text
+    assert "Default schedule" in edit_resp.text
+
+    # Test GET /schedules contains timezone selector with "UTC" and "Europe/Warsaw"
+    sched_page_resp = client.get("/schedules")
+    assert sched_page_resp.status_code == 200
+    assert 'value="UTC"' in sched_page_resp.text
+    assert 'value="Europe/Warsaw"' in sched_page_resp.text
+    assert "Europe/Warsaw" in sched_page_resp.text
