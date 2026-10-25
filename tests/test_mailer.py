@@ -12,6 +12,7 @@ from mail_cadence.mailer import (
     _extract_sender_domain,
     _html_to_plain_text,
     build_email_message,
+    list_builtin_templates,
 )
 from mail_cadence.models import BodyTemplate, MailTask, Recipients, Settings, TaskExecutionStatus
 
@@ -36,16 +37,49 @@ def test_template_renderer_nested_posix_path(tmp_path: Path) -> None:
     assert res == "Nested World!"
 
 
-def test_template_renderer_builtin_fallbacks() -> None:
-    for base_dir in (".", "src/mail_cadence", "src/mail_cadence/templates"):
+def test_template_renderer_builtin_prefix_works_from_any_dir(tmp_path: Path) -> None:
+    for base_dir in (tmp_path, tmp_path / "does_not_exist"):
         renderer = TemplateRenderer(template_dir=base_dir)
-        for tpl_path in (
-            "src/mail_cadence/templates/daily_dispatch.html.j2",
-            "templates/daily_dispatch.html.j2",
-            "daily_dispatch.html.j2",
-        ):
-            out = renderer.render(tpl_path, {"region": "EMEA", "report_date": "2026-10-25"})
-            assert "Hello EMEA" in out
+        out = renderer.render(
+            "builtin:daily_dispatch.html.j2", {"region": "EMEA", "report_date": "2026-10-25"}
+        )
+        assert "Hello EMEA" in out
+
+
+def test_template_renderer_has_no_fallback_locations(tmp_path: Path) -> None:
+    renderer = TemplateRenderer(template_dir=tmp_path)
+    for tpl_path in (
+        "daily_dispatch.html.j2",
+        "templates/daily_dispatch.html.j2",
+        "src/mail_cadence/templates/daily_dispatch.html.j2",
+    ):
+        with pytest.raises(jinja2.TemplateNotFound):
+            renderer.render(tpl_path, {})
+
+
+def test_template_renderer_user_dir_takes_plain_paths(tmp_path: Path) -> None:
+    (tmp_path / "daily_dispatch.html.j2").write_text("Custom {{ region }}")
+    renderer = TemplateRenderer(template_dir=tmp_path)
+    assert renderer.render("daily_dispatch.html.j2", {"region": "PL"}) == "Custom PL"
+    assert "Hello PL" in renderer.render("builtin:daily_dispatch.html.j2", {"region": "PL"})
+
+
+def test_template_renderer_rejects_unknown_and_internal_builtins(tmp_path: Path) -> None:
+    renderer = TemplateRenderer(template_dir=tmp_path)
+    for tpl_path in (
+        "builtin:missing.html.j2",
+        "builtin:report_email.html.j2",
+        "builtin:../mailer.py",
+    ):
+        with pytest.raises(jinja2.TemplateNotFound):
+            renderer.render(tpl_path, {})
+
+
+def test_list_builtin_templates_excludes_internal() -> None:
+    names = list_builtin_templates()
+    assert "builtin:daily_dispatch.html.j2" in names
+    assert "builtin:settlement_summary.html.j2" in names
+    assert not any("report_email" in n for n in names)
 
 
 def test_build_email_message_headers() -> None:

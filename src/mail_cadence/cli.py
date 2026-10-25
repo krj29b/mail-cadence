@@ -39,6 +39,11 @@ app = typer.Typer(
 )
 
 
+TEMPLATE_DIR_HELP = (
+    "Directory that task template paths are resolved against "
+    "(built-in templates use the 'builtin:' prefix)"
+)
+
 _LOOPBACK_HOSTS: frozenset[str] = frozenset({"127.0.0.1", "::1", "localhost"})
 
 
@@ -316,6 +321,14 @@ def main(
             help="Enable verbose debug logging",
         ),
     ] = False,
+    template_dir: Annotated[
+        str,
+        typer.Option(
+            "--template-dir",
+            envvar="MAIL_CADENCE_TEMPLATE_DIR",
+            help=TEMPLATE_DIR_HELP,
+        ),
+    ] = ".",
 ) -> None:
     if ctx.invoked_subcommand is None:
         exit_code = asyncio.run(
@@ -325,6 +338,7 @@ def main(
                 dry_run=dry_run,
                 verbose=verbose,
                 db_path=db,
+                template_dir=template_dir,
             )
         )
         raise typer.Exit(code=exit_code)
@@ -471,7 +485,8 @@ def cli_serve(
         typer.Option(
             "--template-dir",
             "-t",
-            help="Path to template directory for live task preview",
+            envvar="MAIL_CADENCE_TEMPLATE_DIR",
+            help=TEMPLATE_DIR_HELP,
         ),
     ] = ".",
     insecure_no_auth: Annotated[

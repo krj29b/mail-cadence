@@ -240,7 +240,7 @@ When importing XML files using `DatabaseRepository.save_mail_configuration` and 
         <Bcc>audit@example.com</Bcc>
       </Recipients>
       <Subject>Daily Operational Dispatch - EMEA</Subject>
-      <BodyTemplate format="html">templates/daily_dispatch.html.j2</BodyTemplate>
+      <BodyTemplate format="html">builtin:daily_dispatch.html.j2</BodyTemplate>
       <ContextVariables>
         <Var name="region">EMEA</Var>
         <Var name="report_date">2026-10-17</Var>
@@ -410,9 +410,10 @@ stateDiagram-v2
 - All XML inputs (`tasks.xml`, `schedules.xml`) are parsed via `defusedxml.ElementTree.fromstring` prior to passing DOM nodes into `pydantic-xml`.
 - Prevents XML External Entity (XXE) attacks, billion laughs entity expansion, and DTD retrieval attacks.
 
-### 2. Path Traversal Prevention (`TemplateRenderer`)
-- Jinja2 template file paths specified in `<BodyTemplate>` are validated and resolved using `Path(template_path).resolve()`.
-- Explicitly enforces that `resolved_path` must reside strictly within `base_dir` via `resolved_path.relative_to(base_dir)`. Attempting to reference files outside the template base directory raises a `ValueError`.
+### 2. Template Resolution & Path Traversal Prevention (`TemplateRenderer`)
+- `builtin:<name>` (e.g. `builtin:daily_dispatch.html.j2`) loads a template shipped in the package's `templates/` directory. The internal report templates (`report_email.*`) cannot be used as task templates.
+- Any other `<BodyTemplate>` path is resolved only inside the template directory (`--template-dir` / `MAIL_CADENCE_TEMPLATE_DIR`, default: current directory). There are no fallback locations; a missing file raises `jinja2.TemplateNotFound` and the task fails.
+- The resolved path must reside within the template directory (`resolved_path.relative_to(base_dir)`). Attempting to reference files outside it raises a `ValueError`.
 
 ### 3. Cross-Site Scripting (XSS) Prevention
 - Jinja2 environments (task renderer and status report) use `select_autoescape(enabled_extensions=mailer.AUTOESCAPE_EXTENSIONS, default_for_string=True)`, which enables autoescape for `html`, `htm`, `xml` and the compound `html.j2`, `htm.j2`, `xml.j2` extensions, and for templates rendered from strings.

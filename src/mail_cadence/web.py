@@ -22,7 +22,12 @@ from pydantic import ValidationError
 from mail_cadence import __version__
 from mail_cadence.cli import run_dispatch_pipeline
 from mail_cadence.database import get_connection, init_db
-from mail_cadence.mailer import AsyncMailer, TemplateRenderer
+from mail_cadence.mailer import (
+    INTERNAL_TEMPLATES,
+    AsyncMailer,
+    TemplateRenderer,
+    list_builtin_templates,
+)
 from mail_cadence.models import (
     BodyTemplate,
     ContextVar,
@@ -72,12 +77,6 @@ _IGNORED_TEMPLATE_DIRS: frozenset[str] = frozenset(
         "config",
         "build",
         "dist",
-    }
-)
-_INTERNAL_REPORT_TEMPLATES: frozenset[str] = frozenset(
-    {
-        "report_email.html.j2",
-        "report_email.txt.j2",
     }
 )
 
@@ -158,22 +157,23 @@ def verify_same_origin(request: Request) -> None:
 def _is_valid_task_template(path: Path, base_path: Path) -> bool:
     if not path.is_file() or path.suffix.lower() not in _VALID_TEMPLATE_EXTENSIONS:
         return False
-    if path.name in _INTERNAL_REPORT_TEMPLATES:
+    if path.name in INTERNAL_TEMPLATES:
         return False
     rel_parts = path.relative_to(base_path).parts
     return not any(p.startswith((".", "_")) or p in _IGNORED_TEMPLATE_DIRS for p in rel_parts)
 
 
 def _discover_available_templates(template_dir: str | Path) -> list[str]:
+    """List templates usable by tasks: files in template_dir, then the built-in ones."""
     base_path = Path(template_dir)
-    if not base_path.exists() or not base_path.is_dir():
-        return []
-    templates_found = [
-        path.relative_to(base_path).as_posix()
-        for path in base_path.rglob("*")
-        if _is_valid_task_template(path, base_path)
-    ]
-    return sorted(templates_found)
+    templates_found: list[str] = []
+    if base_path.is_dir():
+        templates_found = sorted(
+            path.relative_to(base_path).as_posix()
+            for path in base_path.rglob("*")
+            if _is_valid_task_template(path, base_path)
+        )
+    return templates_found + list_builtin_templates()
 
 
 def _is_dispatched_in_window(

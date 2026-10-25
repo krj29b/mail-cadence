@@ -403,12 +403,21 @@ def test_web_dispatch_trigger_task_run(tmp_db_path: Path, tmp_path: Path) -> Non
     assert res_404.status_code == 404
 
 
-def test_template_discovery_excludes_internal_and_web_templates() -> None:
-    discovered = _discover_available_templates(".")
-    assert "src/mail_cadence/templates/daily_dispatch.html.j2" in discovered
-    assert "src/mail_cadence/templates/settlement_summary.html.j2" in discovered
+def test_template_discovery_excludes_internal_and_web_templates(tmp_path: Path) -> None:
+    (tmp_path / "custom.html.j2").write_text("x")
+    (tmp_path / "report_email.html.j2").write_text("x")
+    (tmp_path / "web_templates").mkdir()
+    (tmp_path / "web_templates" / "page.html").write_text("x")
+
+    discovered = _discover_available_templates(tmp_path)
+    assert discovered[0] == "custom.html.j2"
+    assert "builtin:daily_dispatch.html.j2" in discovered
+    assert "builtin:settlement_summary.html.j2" in discovered
     assert not any("report_email" in t for t in discovered)
     assert not any("web_templates" in t for t in discovered)
+
+    # Built-in templates are listed even without a template directory.
+    assert "builtin:daily_dispatch.html.j2" in _discover_available_templates(tmp_path / "missing")
 
 
 def test_task_edit_resets_window_idempotency_and_skip_preserves_success(
@@ -426,7 +435,7 @@ def test_task_edit_resets_window_idempotency_and_skip_preserves_success(
                 "subject": "Initial Subject",
                 "body_template": {
                     "format": "html",
-                    "template_path": "src/mail_cadence/templates/daily_dispatch.html.j2",
+                    "template_path": "builtin:daily_dispatch.html.j2",
                 },
             }
         )
@@ -473,7 +482,7 @@ def test_task_edit_resets_window_idempotency_and_skip_preserves_success(
             "max_retries": 3,
             "subject": "Updated Subject",
             "body_format": "html",
-            "body_template_path": "src/mail_cadence/templates/daily_dispatch.html.j2",
+            "body_template_path": "builtin:daily_dispatch.html.j2",
             "to": "user@example.com",
             "cc": "",
             "bcc": "",

@@ -15,7 +15,7 @@
         <Cc>account.manager@example.com</Cc>
       </Recipients>
       <Subject>Daily Operational Dispatch - EMEA</Subject>
-      <BodyTemplate format="html">src/mail_cadence/templates/daily_dispatch.html.j2</BodyTemplate>
+      <BodyTemplate format="html">builtin:daily_dispatch.html.j2</BodyTemplate>
       <ContextVariables>
         <Var name="region">EMEA</Var>
         <Var name="report_date">2026-10-17</Var>
@@ -28,7 +28,7 @@
         <To>finance.dept@example.com</To>
       </Recipients>
       <Subject>Automated Batch Settlement Summary</Subject>
-      <BodyTemplate format="html">src/mail_cadence/templates/settlement_summary.html.j2</BodyTemplate>
+      <BodyTemplate format="html">builtin:settlement_summary.html.j2</BodyTemplate>
       <ContextVariables>
         <Var name="batch_id">BATCH-2026-10</Var>
         <Var name="currency">EUR</Var>

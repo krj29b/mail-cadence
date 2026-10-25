@@ -12,7 +12,14 @@ from pathlib import Path
 from typing import Any
 
 import aiosmtplib
-from jinja2 import Environment, FileSystemLoader, select_autoescape
+from jinja2 import (
+    ChoiceLoader,
+    Environment,
+    FileSystemLoader,
+    PrefixLoader,
+    TemplateNotFound,
+    select_autoescape,
+)
 
 from mail_cadence.models import MailTask, Settings, TaskExecutionResult, TaskExecutionStatus
 from mail_cadence.scheduler import TokenBucketRateLimiter
@@ -20,94 +27,69 @@ from mail_cadence.scheduler import TokenBucketRateLimiter
 logger = logging.getLogger(__name__)
 
 PACKAGE_TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
-_KNOWN_TEMPLATE_PREFIXES: tuple[str, ...] = (
-    "src/mail_cadence/templates/",
-    "src/mail_cadence/",
-    "templates/",
-)
+
+# Templates shipped with the package are referenced as "builtin:<file name>".
+BUILTIN_TEMPLATE_PREFIX = "builtin:"
+# Templates used internally by the status report; never usable as task templates.
+INTERNAL_TEMPLATES: frozenset[str] = frozenset({"report_email.html.j2", "report_email.txt.j2"})
 
 # select_autoescape() only matches the end of the file name, so compound
 # extensions such as ".html.j2" must be listed explicitly.
 AUTOESCAPE_EXTENSIONS: tuple[str, ...] = ("html", "htm", "xml", "html.j2", "htm.j2", "xml.j2")
 
 
+def list_builtin_templates() -> list[str]:
+    """Return the task templates shipped with the package, as "builtin:" references."""
+    if not PACKAGE_TEMPLATES_DIR.is_dir():
+        return []
+    return sorted(
+        f"{BUILTIN_TEMPLATE_PREFIX}{path.name}"
+        for path in PACKAGE_TEMPLATES_DIR.glob("*.j2")
+        if path.is_file() and path.name not in INTERNAL_TEMPLATES
+    )
+
+
 class TemplateRenderer:
+    """Render task templates.
+
+    Resolution rules:
+    - ``builtin:<name>`` loads a template shipped with the package;
+    - any other path is resolved inside ``template_dir`` only (no fallbacks);
+    - a missing template raises ``jinja2.TemplateNotFound``.
+    """
+
     def __init__(self, template_dir: str | Path = ".") -> None:
         self.template_dir = Path(template_dir)
-        search_paths = [str(self.template_dir)]
-        if PACKAGE_TEMPLATES_DIR.is_dir():
-            search_paths.append(str(PACKAGE_TEMPLATES_DIR))
+        builtin_loader = PrefixLoader(
+            {"builtin": FileSystemLoader(str(PACKAGE_TEMPLATES_DIR))}, delimiter=":"
+        )
         self.env = Environment(
-            loader=FileSystemLoader(search_paths),
+            loader=ChoiceLoader([builtin_loader, FileSystemLoader(str(self.template_dir))]),
             autoescape=select_autoescape(
                 enabled_extensions=AUTOESCAPE_EXTENSIONS, default_for_string=True
             ),
         )
 
-    @staticmethod
-    def _candidate_rel_paths(posix_path: str) -> list[str]:
-        candidates: list[str] = [posix_path]
-        for prefix in _KNOWN_TEMPLATE_PREFIXES:
-            if posix_path.startswith(prefix):
-                stripped = posix_path[len(prefix) :]
-                if stripped:
-                    candidates.extend(
-                        [
-                            stripped,
-                            f"templates/{stripped}",
-                            f"src/mail_cadence/templates/{stripped}",
-                        ]
-                    )
-        candidates.extend(
-            [
-                f"templates/{posix_path}",
-                f"src/mail_cadence/{posix_path}",
-                f"src/mail_cadence/templates/{posix_path}",
-            ]
-        )
-        return candidates
+    def _resolve_loader_name(self, template_path: str) -> str:
+        if template_path.startswith(BUILTIN_TEMPLATE_PREFIX):
+            if template_path not in list_builtin_templates():
+                raise TemplateNotFound(template_path)
+            return template_path
 
-    @staticmethod
-    def _find_existing_in_dir(root_dir: Path, candidates: list[str]) -> str | None:
-        for cand in candidates:
-            target = (root_dir / cand).resolve()
-            if target.is_relative_to(root_dir) and target.is_file():
-                return target.relative_to(root_dir).as_posix()
-        return None
-
-    def _resolve_loader_name(self, rel_path: Path, base_dir: Path) -> str:
-        posix_path = rel_path.as_posix()
-        if (base_dir / rel_path).is_file():
-            return posix_path
-
-        candidates = self._candidate_rel_paths(posix_path)
-        for root_dir in (base_dir, PACKAGE_TEMPLATES_DIR.resolve()):
-            found = self._find_existing_in_dir(root_dir, candidates)
-            if found is not None:
-                return found
-        return posix_path
-
-    def render(self, template_path: str, context: dict[str, Any]) -> str:
         tpl_path = Path(template_path)
         base_dir = self.template_dir.resolve()
-
-        if tpl_path.is_absolute():
-            resolved_path = tpl_path.resolve()
-        else:
-            resolved_path = (self.template_dir / tpl_path).resolve()
-
+        resolved_path = (base_dir / tpl_path).resolve()
         try:
             rel_path = resolved_path.relative_to(base_dir)
         except ValueError as exc:
             msg = f"Access denied for template path outside base directory: {template_path}"
             raise ValueError(msg) from exc
+        if not resolved_path.is_file():
+            raise TemplateNotFound(template_path)
+        return rel_path.as_posix()
 
-        loader_name = (
-            rel_path.as_posix()
-            if tpl_path.is_absolute()
-            else self._resolve_loader_name(rel_path, base_dir)
-        )
-        template = self.env.get_template(loader_name)
+    def render(self, template_path: str, context: dict[str, Any]) -> str:
+        template = self.env.get_template(self._resolve_loader_name(template_path))
         return template.render(**context)
 
 

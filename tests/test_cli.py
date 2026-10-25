@@ -1,7 +1,7 @@
 import logging
 import sys
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from typer.testing import CliRunner
@@ -248,6 +248,20 @@ async def test_task_priority_scheduling_order(tmp_path: Path) -> None:
         code = await run_dispatch_pipeline(tasks_xml, schedules_xml, dry_run=True, db_path=db_path)
         assert code == 0
         assert executed_order == ["task_z", "task_a"]
+
+
+def test_cli_dispatch_passes_template_dir(tmp_path: Path) -> None:
+    db = str(tmp_path / "t.db")
+    with patch("mail_cadence.cli.run_dispatch_pipeline", new_callable=AsyncMock) as pipeline:
+        pipeline.return_value = 0
+        res = runner.invoke(app, ["--db", db, "--template-dir", "/srv/templates"])
+        assert res.exit_code == 0
+        assert pipeline.await_args is not None
+        assert pipeline.await_args.kwargs["template_dir"] == "/srv/templates"
+
+        res_env = runner.invoke(app, ["--db", db], env={"MAIL_CADENCE_TEMPLATE_DIR": "/env/tpl"})
+        assert res_env.exit_code == 0
+        assert pipeline.await_args.kwargs["template_dir"] == "/env/tpl"
 
 
 def test_cli_version_option() -> None:
