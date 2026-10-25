@@ -36,6 +36,18 @@ def test_template_renderer_nested_posix_path(tmp_path: Path) -> None:
     assert res == "Nested World!"
 
 
+def test_template_renderer_builtin_fallbacks() -> None:
+    for base_dir in (".", "src/mail_cadence", "src/mail_cadence/templates"):
+        renderer = TemplateRenderer(template_dir=base_dir)
+        for tpl_path in (
+            "src/mail_cadence/templates/daily_dispatch.html.j2",
+            "templates/daily_dispatch.html.j2",
+            "daily_dispatch.html.j2",
+        ):
+            out = renderer.render(tpl_path, {"region": "EMEA", "report_date": "2026-10-25"})
+            assert "Hello EMEA" in out
+
+
 def test_build_email_message_headers() -> None:
     task = MailTask(
         id="TASK-HDR",

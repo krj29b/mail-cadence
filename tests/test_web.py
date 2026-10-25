@@ -15,7 +15,7 @@ from mail_cadence.models import (
     WorkSchedules,
 )
 from mail_cadence.repository import DatabaseRepository
-from mail_cadence.web import create_app
+from mail_cadence.web import _discover_available_templates, create_app
 
 
 @pytest.fixture
@@ -380,10 +380,93 @@ def test_web_dispatch_trigger_task_run(tmp_db_path: Path, tmp_path: Path) -> Non
     res = client.post("/tasks/task_single_run/run")
     assert res.status_code == 200
     assert "task_single_run" in res.text
+    assert "alert-error" in res.text
+    assert "Template rendering error" in res.text
 
     # Test 404 for unknown task
     res_404 = client.post("/tasks/unknown_task/run")
     assert res_404.status_code == 404
+
+
+def test_template_discovery_excludes_internal_and_web_templates() -> None:
+    discovered = _discover_available_templates(".")
+    assert "src/mail_cadence/templates/daily_dispatch.html.j2" in discovered
+    assert "src/mail_cadence/templates/settlement_summary.html.j2" in discovered
+    assert not any("report_email" in t for t in discovered)
+    assert not any("web_templates" in t for t in discovered)
+
+
+def test_task_edit_resets_window_idempotency_and_skip_preserves_success(
+    tmp_db_path: Path, tmp_path: Path
+) -> None:
+    conn = get_connection(tmp_db_path)
+    repo = DatabaseRepository(conn)
+    repo.save_single_task(
+        MailTask.model_validate(
+            {
+                "id": "editable_task",
+                "schedule_ref": "sched_default",
+                "sender": "sender@example.com",
+                "recipients": {"to": ["user@example.com"]},
+                "subject": "Initial Subject",
+                "body_template": {
+                    "format": "html",
+                    "template_path": "src/mail_cadence/templates/daily_dispatch.html.j2",
+                },
+            }
+        )
+    )
+
+    # 1. Log SUCCESS -> task is Sent in Window
+    repo.log_task_execution(
+        TaskExecutionResult(
+            task_id="editable_task",
+            status=TaskExecutionStatus.SUCCESS,
+            sent_count=1,
+            duration_ms=10.0,
+        )
+    )
+    # 2. Log SKIPPED_SCHEDULE -> must NOT overwrite tasks.last_status == SUCCESS
+    repo.log_task_execution(
+        TaskExecutionResult(
+            task_id="editable_task",
+            status=TaskExecutionStatus.SKIPPED_SCHEDULE,
+            sent_count=0,
+            duration_ms=0.0,
+            error_details="Task already dispatched in current 'sched_default' window",
+        )
+    )
+    _, last_st = repo.get_task_execution_states()["editable_task"]
+    assert last_st == TaskExecutionStatus.SUCCESS
+    conn.close()
+
+    app = create_app(db_path=tmp_db_path, template_dir=tmp_path)
+    c = TestClient(app)
+
+    # Still shows Sent in Window on /tasks
+    resp_before_edit = c.get("/tasks")
+    assert "Sent in Window" in resp_before_edit.text
+
+    # 3. Edit and save task via POST /tasks -> resets last_status/last_run so it's Ready again
+    resp_after_edit = c.post(
+        "/tasks",
+        data={
+            "id": "editable_task",
+            "schedule_ref": "sched_default",
+            "sender": "sender@example.com",
+            "priority": "normal",
+            "max_retries": 3,
+            "subject": "Updated Subject",
+            "body_format": "html",
+            "body_template_path": "src/mail_cadence/templates/daily_dispatch.html.j2",
+            "to": "user@example.com",
+            "cc": "",
+            "bcc": "",
+            "context_variables": '[{"name": "region", "value": "PL"}]',
+        },
+    )
+    assert resp_after_edit.status_code == 200
+    assert "Window Open • Ready" in resp_after_edit.text
 
 
 @pytest.mark.asyncio

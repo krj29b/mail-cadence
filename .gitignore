@@ -112,3 +112,5 @@ Desktop.ini
 
 config/testmail/*
 uv.lock
+_install.sh
+_plans/

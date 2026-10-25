@@ -24,7 +24,7 @@ from mail_cadence.models import (
 )
 from mail_cadence.reporter import ReportGenerator, aggregate_summary_report
 from mail_cadence.repository import DatabaseRepository
-from mail_cadence.scheduler import TaskScheduler, TokenBucketRateLimiter
+from mail_cadence.scheduler import TaskScheduler, TokenBucketRateLimiter, get_active_window
 from mail_cadence.xml_loader import (
     XMLValidationError,
     export_to_xml,
@@ -61,6 +61,18 @@ def _seed_xml_if_provided(
     except Exception as exc:
         logger.error(f"Unexpected error loading XML configs: {exc}")
         return False
+
+
+def _get_skip_reason(
+    scheduler: TaskScheduler,
+    task: MailTask,
+    ref_dt: datetime | None,
+) -> str:
+    schedule = scheduler._schedules_by_id.get(task.schedule_ref)
+    norm_dt = scheduler._normalize_dt(ref_dt)
+    if schedule is not None and get_active_window(schedule, norm_dt) is not None:
+        return f"Task already dispatched in current '{task.schedule_ref}' window"
+    return f"Schedule '{task.schedule_ref}' not active at current time"
 
 
 def _partition_eligible_tasks(
@@ -100,13 +112,14 @@ def _partition_eligible_tasks(
             rate_limiter, semaphore = window_controls[key]
             eligible_tasks.append((task, rate_limiter, semaphore))
         else:
-            logger.info(f"Task {task.id} skipped due to schedule rules.")
+            skip_reason = _get_skip_reason(scheduler, task, ref_dt)
+            logger.info(f"Task {task.id} skipped due to schedule rules ({skip_reason}).")
             skipped_res = TaskExecutionResult(
                 task_id=task.id,
                 status=TaskExecutionStatus.SKIPPED_SCHEDULE,
                 sent_count=0,
                 duration_ms=0.0,
-                error_details=f"Schedule '{task.schedule_ref}' not active at current time",
+                error_details=skip_reason,
             )
             results.append(skipped_res)
             repo.log_task_execution(skipped_res, batch_id=batch_id)
@@ -136,6 +149,7 @@ async def run_dispatch_pipeline(
     verbose: bool = False,
     ref_dt: datetime | None = None,
     db_path: str = "mail_cadence.db",
+    template_dir: str | Path = ".",
 ) -> int:
     setup_logging(verbose)
     logger = logging.getLogger("mail_cadence.cli")
@@ -167,7 +181,7 @@ async def run_dispatch_pipeline(
             logger.warning("No tasks found in database.")
             return 0
 
-        renderer = TemplateRenderer()
+        renderer = TemplateRenderer(template_dir=template_dir)
         mailer = AsyncMailer(settings=settings, renderer=renderer, dry_run=dry_run)
         batch_id = str(uuid.uuid4())
 

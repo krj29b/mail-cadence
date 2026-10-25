@@ -19,14 +19,67 @@ from mail_cadence.scheduler import TokenBucketRateLimiter
 
 logger = logging.getLogger(__name__)
 
+PACKAGE_TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
+_KNOWN_TEMPLATE_PREFIXES: tuple[str, ...] = (
+    "src/mail_cadence/templates/",
+    "src/mail_cadence/",
+    "templates/",
+)
+
 
 class TemplateRenderer:
     def __init__(self, template_dir: str | Path = ".") -> None:
         self.template_dir = Path(template_dir)
+        search_paths = [str(self.template_dir)]
+        if PACKAGE_TEMPLATES_DIR.is_dir():
+            search_paths.append(str(PACKAGE_TEMPLATES_DIR))
         self.env = Environment(
-            loader=FileSystemLoader(str(self.template_dir)),
+            loader=FileSystemLoader(search_paths),
             autoescape=select_autoescape(["html", "xml"]),
         )
+
+    @staticmethod
+    def _candidate_rel_paths(posix_path: str) -> list[str]:
+        candidates: list[str] = [posix_path]
+        for prefix in _KNOWN_TEMPLATE_PREFIXES:
+            if posix_path.startswith(prefix):
+                stripped = posix_path[len(prefix) :]
+                if stripped:
+                    candidates.extend(
+                        [
+                            stripped,
+                            f"templates/{stripped}",
+                            f"src/mail_cadence/templates/{stripped}",
+                        ]
+                    )
+        candidates.extend(
+            [
+                f"templates/{posix_path}",
+                f"src/mail_cadence/{posix_path}",
+                f"src/mail_cadence/templates/{posix_path}",
+            ]
+        )
+        return candidates
+
+    @staticmethod
+    def _find_existing_in_dir(root_dir: Path, candidates: list[str]) -> str | None:
+        for cand in candidates:
+            target = (root_dir / cand).resolve()
+            if target.is_relative_to(root_dir) and target.is_file():
+                return target.relative_to(root_dir).as_posix()
+        return None
+
+    def _resolve_loader_name(self, rel_path: Path, base_dir: Path) -> str:
+        posix_path = rel_path.as_posix()
+        if (base_dir / rel_path).is_file():
+            return posix_path
+
+        candidates = self._candidate_rel_paths(posix_path)
+        for root_dir in (base_dir, PACKAGE_TEMPLATES_DIR.resolve()):
+            found = self._find_existing_in_dir(root_dir, candidates)
+            if found is not None:
+                return found
+        return posix_path
 
     def render(self, template_path: str, context: dict[str, Any]) -> str:
         tpl_path = Path(template_path)
@@ -43,7 +96,12 @@ class TemplateRenderer:
             msg = f"Access denied for template path outside base directory: {template_path}"
             raise ValueError(msg) from exc
 
-        template = self.env.get_template(rel_path.as_posix())
+        loader_name = (
+            rel_path.as_posix()
+            if tpl_path.is_absolute()
+            else self._resolve_loader_name(rel_path, base_dir)
+        )
+        template = self.env.get_template(loader_name)
         return template.render(**context)
 
 

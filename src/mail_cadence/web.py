@@ -1,4 +1,5 @@
 import asyncio
+import html
 import json
 import math
 import secrets
@@ -57,6 +58,27 @@ COMMON_TIMEZONES: tuple[str, ...] = (
     "Australia/Sydney",
 )
 
+_VALID_TEMPLATE_EXTENSIONS: frozenset[str] = frozenset({".j2", ".html", ".htm", ".txt"})
+_IGNORED_TEMPLATE_DIRS: frozenset[str] = frozenset(
+    {
+        "__pycache__",
+        "node_modules",
+        "venv",
+        "web_templates",
+        "tests",
+        "docs",
+        "config",
+        "build",
+        "dist",
+    }
+)
+_INTERNAL_REPORT_TEMPLATES: frozenset[str] = frozenset(
+    {
+        "report_email.html.j2",
+        "report_email.txt.j2",
+    }
+)
+
 security = HTTPBasic(auto_error=False)
 
 
@@ -100,20 +122,24 @@ def verify_credentials(
             )
 
 
+def _is_valid_task_template(path: Path, base_path: Path) -> bool:
+    if not path.is_file() or path.suffix.lower() not in _VALID_TEMPLATE_EXTENSIONS:
+        return False
+    if path.name in _INTERNAL_REPORT_TEMPLATES:
+        return False
+    rel_parts = path.relative_to(base_path).parts
+    return not any(p.startswith((".", "_")) or p in _IGNORED_TEMPLATE_DIRS for p in rel_parts)
+
+
 def _discover_available_templates(template_dir: str | Path) -> list[str]:
     base_path = Path(template_dir)
     if not base_path.exists() or not base_path.is_dir():
         return []
-    templates_found: list[str] = []
-    valid_extensions = {".j2", ".html", ".htm", ".txt"}
-    for path in base_path.rglob("*"):
-        if path.is_file() and path.suffix.lower() in valid_extensions:
-            rel_parts = path.relative_to(base_path).parts
-            if any(
-                p.startswith(".") or p in ("__pycache__", "node_modules", "venv") for p in rel_parts
-            ):
-                continue
-            templates_found.append(path.relative_to(base_path).as_posix())
+    templates_found = [
+        path.relative_to(base_path).as_posix()
+        for path in base_path.rglob("*")
+        if _is_valid_task_template(path, base_path)
+    ]
     return sorted(templates_found)
 
 
@@ -552,7 +578,7 @@ def preview_task(
             task.body_template.template_path,
             task.get_context_dict(),
         )
-    except (ValueError, jinja2.TemplateNotFound, FileNotFoundError) as exc:
+    except (ValueError, jinja2.TemplateNotFound, jinja2.TemplateError, FileNotFoundError) as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Template error: {exc}",
@@ -810,7 +836,12 @@ async def trigger_dispatch_run(
 
     async with lock:
         db_path = getattr(request.app.state, "db_path", "mail_cadence.db")
-        await run_dispatch_pipeline(db_path=db_path, dry_run=dry_run)
+        template_dir = getattr(request.app.state, "template_dir", ".")
+        await run_dispatch_pipeline(
+            db_path=db_path,
+            dry_run=dry_run,
+            template_dir=template_dir,
+        )
 
         with closing(get_connection(db_path)) as conn:
             repo = DatabaseRepository(conn)
@@ -875,12 +906,14 @@ async def run_single_task(
             if res.status == TaskExecutionStatus.FAILED
             else "badge-partial"
         )
+        alert_class = "alert-error" if res.status == TaskExecutionStatus.FAILED else "alert-success"
+        error_suffix = f" — {html.escape(res.error_details)}" if res.error_details else ""
 
         content = (
-            f'<div class="alert-success">'
-            f"Task '<strong>{task_id}</strong>' executed: "
+            f'<div class="{alert_class}">'
+            f"Task '<strong>{html.escape(task_id)}</strong>' executed: "
             f'<span class="{badge_class}">{res.status.value}</span> '
-            f"(Sent: {res.sent_count})"
+            f"(Sent: {res.sent_count}){error_suffix}"
             f"</div>"
         )
         return HTMLResponse(content=content)

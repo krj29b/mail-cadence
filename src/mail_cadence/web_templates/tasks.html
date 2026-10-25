@@ -330,23 +330,26 @@
 </div>
 
 <script>
-function addContextVarRow(key = '', value = '') {
+function addContextVarRow(key = '', value = '', skipSync = false) {
   const container = document.getElementById('ctx-vars-container');
   const rowId = 'ctx-row-' + Date.now() + '-' + Math.floor(Math.random() * 1000);
-  const rowHtml = `
-    <div id="${rowId}" class="flex items-center gap-2 ctx-var-row">
-      <input type="text" placeholder="Key (e.g. company)" value="${key}" oninput="syncContextVarsJson()"
-             class="ctx-key w-1/3 bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono">
-      <input type="text" placeholder="Value (e.g. Acme Corp)" value="${value}" oninput="syncContextVarsJson()"
-             class="ctx-val w-2/3 bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono">
-      <button type="button" onclick="removeContextVarRow('${rowId}')" class="p-1 text-slate-500 hover:text-rose-400 transition-colors">
-        <i data-lucide="x" class="w-4 h-4"></i>
-      </button>
-    </div>
+  const rowDiv = document.createElement('div');
+  rowDiv.id = rowId;
+  rowDiv.className = 'flex items-center gap-2 ctx-var-row';
+  rowDiv.innerHTML = `
+    <input type="text" placeholder="Key (e.g. company)" oninput="syncContextVarsJson()"
+           class="ctx-key w-1/3 bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono">
+    <input type="text" placeholder="Value (e.g. Acme Corp)" oninput="syncContextVarsJson()"
+           class="ctx-val w-2/3 bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono">
+    <button type="button" onclick="removeContextVarRow('${rowId}')" class="p-1 text-slate-500 hover:text-rose-400 transition-colors">
+      <i data-lucide="x" class="w-4 h-4"></i>
+    </button>
   `;
-  container.insertAdjacentHTML('beforeend', rowHtml);
+  rowDiv.querySelector('.ctx-key').value = key;
+  rowDiv.querySelector('.ctx-val').value = value;
+  container.appendChild(rowDiv);
   if (window.lucide) { lucide.createIcons(); }
-  syncContextVarsJson();
+  if (!skipSync) { syncContextVarsJson(); }
 }
 
 function removeContextVarRow(rowId) {
@@ -383,9 +386,10 @@ function renderContextVarsFromField() {
     if (Array.isArray(data)) {
       data.forEach(item => {
         if (item.name) {
-          addContextVarRow(item.name, item.value || '');
+          addContextVarRow(item.name, item.value || '', true);
         }
       });
+      syncContextVarsJson();
     }
   } catch(e) {
     // If not valid JSON, leave container empty
@@ -410,6 +414,9 @@ async function loadTaskToEdit(taskId) {
     document.getElementById('subject').value = task.subject || '';
     document.getElementById('body_format').value = task.body_format || (task.body_template ? task.body_template.format : 'html');
     document.getElementById('body_template_path').value = task.body_template_path || (task.body_template ? task.body_template.template_path : '');
+
+    const tplSelect = document.getElementById('quick-template-select');
+    if (tplSelect) { tplSelect.value = ''; }
 
     const toArr = task.to || (task.recipients ? task.recipients.to : []);
     const ccArr = task.cc || (task.recipients ? task.recipients.cc : []);
@@ -451,6 +458,8 @@ function resetTaskForm() {
 
   const quickSelect = document.getElementById('quick-load-task');
   if (quickSelect) { quickSelect.value = ''; }
+  const tplSelect = document.getElementById('quick-template-select');
+  if (tplSelect) { tplSelect.value = ''; }
 }
 
 function filterTasksTable() {

@@ -376,17 +376,18 @@ class DatabaseRepository:
                 ),
             )
 
-            now_utc_str = datetime.now(UTC).isoformat()
-            self.conn.execute(
-                """
-                UPDATE tasks
-                SET last_run = ?,
-                    last_status = ?,
-                    last_error = ?
-                WHERE id = ?
-                """,
-                (now_utc_str, result.status.value, result.error_details, result.task_id),
-            )
+            if result.status != TaskExecutionStatus.SKIPPED_SCHEDULE:
+                now_utc_str = datetime.now(UTC).isoformat()
+                self.conn.execute(
+                    """
+                    UPDATE tasks
+                    SET last_run = ?,
+                        last_status = ?,
+                        last_error = ?
+                    WHERE id = ?
+                    """,
+                    (now_utc_str, result.status.value, result.error_details, result.task_id),
+                )
 
     def get_task_execution_states(
         self,
@@ -513,6 +514,16 @@ class DatabaseRepository:
     def save_single_task(self, task: MailTask) -> None:
         with self.conn:
             self._save_task(task, mode="upsert")
+            self.conn.execute(
+                """
+                UPDATE tasks
+                SET last_run = NULL,
+                    last_status = NULL,
+                    last_error = NULL
+                WHERE id = ?
+                """,
+                (task.id,),
+            )
 
     def delete_mail_task(self, task_id: str) -> bool:
         with self.conn:
