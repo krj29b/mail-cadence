@@ -522,3 +522,78 @@ def test_api_schedule_detail_edit_query_and_timezone_selector(
     assert 'value="UTC"' in sched_page_resp.text
     assert 'value="Europe/Warsaw"' in sched_page_resp.text
     assert "Europe/Warsaw" in sched_page_resp.text
+
+
+def test_dashboard_logs_htmx_filtering_and_pagination(
+    client: TestClient, tmp_db_path: Path
+) -> None:
+    conn = get_connection(tmp_db_path)
+    repo = DatabaseRepository(conn)
+
+    repo.log_task_execution(
+        TaskExecutionResult(
+            task_id="t1",
+            status=TaskExecutionStatus.SUCCESS,
+            sent_count=1,
+            duration_ms=10.0,
+        ),
+        batch_id="b1",
+    )
+    repo.log_task_execution(
+        TaskExecutionResult(
+            task_id="t1",
+            status=TaskExecutionStatus.FAILED,
+            sent_count=0,
+            duration_ms=20.0,
+            error_details="Connection reset by peer",
+        ),
+        batch_id="b1",
+    )
+    repo.log_task_execution(
+        TaskExecutionResult(
+            task_id="t2",
+            status=TaskExecutionStatus.SUCCESS,
+            sent_count=5,
+            duration_ms=30.0,
+        ),
+        batch_id="b2",
+    )
+    repo.log_task_execution(
+        TaskExecutionResult(
+            task_id="t2",
+            status=TaskExecutionStatus.PARTIAL,
+            sent_count=1,
+            duration_ms=15.0,
+            error_details="Recipient error",
+        ),
+        batch_id="b2",
+    )
+    conn.close()
+
+    resp_success = client.get("/dashboard/logs?status=SUCCESS")
+    assert resp_success.status_code == 200
+    assert "SUCCESS" in resp_success.text
+    assert "FAILED" not in resp_success.text
+    assert "Showing 1–2 of 2 execution logs" in resp_success.text  # noqa: RUF001
+
+    resp_t1 = client.get("/dashboard/logs?task_id=t1")
+    assert resp_t1.status_code == 200
+    assert "t1" in resp_t1.text
+    assert "Showing 1–2 of 2 execution logs" in resp_t1.text  # noqa: RUF001
+
+    resp_q = client.get("/dashboard/logs?q=Connection reset")
+    assert resp_q.status_code == 200
+    assert "t1" in resp_q.text
+    assert "Showing 1–1 of 1 execution logs" in resp_q.text  # noqa: RUF001
+
+    resp_p2 = client.get("/dashboard/logs?page=2&page_size=2")
+    assert resp_p2.status_code == 200
+    assert "Showing 3–4 of 4 execution logs (Page 2 of 2)" in resp_p2.text  # noqa: RUF001
+
+    resp_htmx = client.get(
+        "/",
+        headers={"HX-Request": "true", "HX-Target": "logs-table-container"},
+    )
+    assert resp_htmx.status_code == 200
+    assert "<table" in resp_htmx.text
+    assert "<html" not in resp_htmx.text

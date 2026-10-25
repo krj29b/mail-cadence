@@ -1,5 +1,6 @@
 import asyncio
 import json
+import math
 import secrets
 import sqlite3
 from collections.abc import Generator
@@ -205,6 +206,81 @@ def _get_schedule_statuses(work_schedules: WorkSchedules) -> dict[str, bool]:
     return statuses
 
 
+def _normalize_filter_string(val: str | None) -> str | None:
+    if not val or not val.strip():
+        return None
+    return val.strip()
+
+
+def _normalize_page_size(page_size: int) -> int:
+    allowed_page_sizes = (10, 25, 50, 100)
+    if page_size in allowed_page_sizes:
+        return page_size
+    if page_size < 1:
+        return 25
+    return min(page_size, 200)
+
+
+def _get_all_known_task_ids(repo: DatabaseRepository) -> list[str]:
+    configured = [t.id for t in repo.get_mail_tasks()]
+    from_logs = [
+        r["task_id"]
+        for r in repo.conn.execute("SELECT DISTINCT task_id FROM execution_logs").fetchall()
+    ]
+    return sorted(list(set(configured + from_logs)))
+
+
+def _build_logs_pagination_context(
+    repo: DatabaseRepository,
+    page: int = 1,
+    page_size: int = 25,
+    status_filter: str | None = None,
+    task_id_filter: str | None = None,
+    search_query: str | None = None,
+) -> dict[str, Any]:
+    norm_page_size = _normalize_page_size(page_size)
+    s_filter = _normalize_filter_string(status_filter)
+    t_filter = _normalize_filter_string(task_id_filter)
+    q_filter = _normalize_filter_string(search_query)
+
+    total_logs = repo.count_execution_logs(
+        status_filter=s_filter,
+        task_id_filter=t_filter,
+        search_query=q_filter,
+    )
+    total_pages = max(1, math.ceil(total_logs / norm_page_size))
+    norm_page = min(max(1, page), total_pages)
+
+    offset = (norm_page - 1) * norm_page_size
+    logs = repo.get_recent_execution_logs(
+        limit=norm_page_size,
+        status_filter=s_filter,
+        task_id_filter=t_filter,
+        offset=offset,
+        search_query=q_filter,
+    )
+
+    all_task_ids = _get_all_known_task_ids(repo)
+    start_idx = 0 if total_logs == 0 else offset + 1
+    end_idx = 0 if total_logs == 0 else min(offset + norm_page_size, total_logs)
+    page_range = list(range(max(1, norm_page - 2), min(total_pages, norm_page + 2) + 1))
+
+    return {
+        "logs": logs,
+        "page": norm_page,
+        "page_size": norm_page_size,
+        "total_logs": total_logs,
+        "total_pages": total_pages,
+        "start_idx": start_idx,
+        "end_idx": end_idx,
+        "status_filter": s_filter or "",
+        "task_id_filter": t_filter or "",
+        "search_query": q_filter or "",
+        "task_ids": all_task_ids,
+        "page_range": page_range,
+    }
+
+
 PACKAGE_TEMPLATES_DIR = Path(__file__).parent / "web_templates"
 templates = Jinja2Templates(directory=str(PACKAGE_TEMPLATES_DIR))
 router = APIRouter()
@@ -257,14 +333,61 @@ def parse_hour_windows(raw_json: str) -> list[HourWindow]:
 @router.get("/", response_class=HTMLResponse)
 def dashboard(
     request: Request,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(25, ge=1, le=200),
+    status_filter: str | None = Query(None, alias="status"),
+    task_id: str | None = Query(None),
+    q: str | None = Query(None),
     repo: DatabaseRepository = Depends(get_repo),
 ) -> Response:
+    logs_ctx = _build_logs_pagination_context(
+        repo=repo,
+        page=page,
+        page_size=page_size,
+        status_filter=status_filter,
+        task_id_filter=task_id,
+        search_query=q,
+    )
+    if (
+        request.headers.get("HX-Request") == "true"
+        and request.headers.get("HX-Target") == "logs-table-container"
+    ):
+        return templates.TemplateResponse(
+            request=request,
+            name="_logs_table.html",
+            context={"request": request, **logs_ctx},
+        )
+
     stats = repo.get_dashboard_stats()
-    logs = repo.get_recent_execution_logs(limit=50)
     return templates.TemplateResponse(
         request=request,
         name="dashboard.html",
-        context={"active_page": "dashboard", "stats": stats, "logs": logs},
+        context={"request": request, "active_page": "dashboard", "stats": stats, **logs_ctx},
+    )
+
+
+@router.get("/dashboard/logs", response_class=HTMLResponse)
+def get_dashboard_logs(
+    request: Request,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(25, ge=1, le=200),
+    status_filter: str | None = Query(None, alias="status"),
+    task_id: str | None = Query(None),
+    q: str | None = Query(None),
+    repo: DatabaseRepository = Depends(get_repo),
+) -> Response:
+    logs_ctx = _build_logs_pagination_context(
+        repo=repo,
+        page=page,
+        page_size=page_size,
+        status_filter=status_filter,
+        task_id_filter=task_id,
+        search_query=q,
+    )
+    return templates.TemplateResponse(
+        request=request,
+        name="_logs_table.html",
+        context={"request": request, **logs_ctx},
     )
 
 
@@ -652,18 +775,27 @@ def api_logs(
     limit: int = Query(50, ge=1, le=500),
     status_filter: str | None = Query(None, alias="status"),
     task_id_filter: str | None = Query(None, alias="task_id"),
+    offset: int = Query(0, ge=0),
+    q: str | None = Query(None),
     repo: DatabaseRepository = Depends(get_repo),
 ) -> list[dict[str, Any]]:
     return repo.get_recent_execution_logs(
         limit=limit,
         status_filter=status_filter,
         task_id_filter=task_id_filter,
+        offset=offset,
+        search_query=q,
     )
 
 
 @router.post("/dispatch/run", response_class=HTMLResponse)
 async def trigger_dispatch_run(
     request: Request,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(25, ge=1, le=200),
+    status_filter: str | None = Query(None, alias="status"),
+    task_id: str | None = Query(None),
+    q: str | None = Query(None),
 ) -> Response:
     lock: asyncio.Lock = request.app.state.dispatch_lock
     if lock.locked():
@@ -683,16 +815,24 @@ async def trigger_dispatch_run(
         with closing(get_connection(db_path)) as conn:
             repo = DatabaseRepository(conn)
             stats = repo.get_dashboard_stats()
-            logs = repo.get_recent_execution_logs(limit=50)
+            logs_ctx = _build_logs_pagination_context(
+                repo=repo,
+                page=page,
+                page_size=page_size,
+                status_filter=status_filter,
+                task_id_filter=task_id,
+                search_query=q,
+            )
 
         return templates.TemplateResponse(
             request=request,
             name="dashboard.html",
             context={
+                "request": request,
                 "active_page": "dashboard",
                 "stats": stats,
-                "logs": logs,
                 "message": f"Manual dispatch completed (dry_run={dry_run}).",
+                **logs_ctx,
             },
         )
 

@@ -99,61 +99,55 @@
 
 <!-- Recent Execution Audit Logs Section -->
 <div class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-sm">
-  <div class="p-4 border-b border-slate-800/80 flex items-center justify-between bg-slate-900/80">
+  <div class="p-4 border-b border-slate-800/80 flex flex-col md:flex-row md:items-center justify-between gap-4 bg-slate-900/80">
     <div class="flex items-center gap-2">
       <i data-lucide="list-checks" class="w-4 h-4 text-indigo-400"></i>
-      <h2 class="text-sm font-semibold text-white">Recent Execution Logs</h2>
+      <h2 class="text-sm font-semibold text-white whitespace-nowrap">Recent Execution Logs</h2>
     </div>
-    <span class="text-xs font-mono text-slate-400">Showing last 50 entries</span>
+
+    <!-- Filter Toolbar Form -->
+    <form id="logs-filter-form" hx-get="/dashboard/logs" hx-target="#logs-table-container" hx-trigger="change, keyup delay:300ms from:#logs-search-input, submit" class="flex flex-wrap items-center gap-2.5">
+      <!-- Search Input -->
+      <div class="relative min-w-[200px] flex-1 sm:flex-initial">
+        <i data-lucide="search" class="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500"></i>
+        <input type="text" id="logs-search-input" name="q" value="{{ search_query }}" placeholder="Search task, batch ID, or error..." class="w-full bg-slate-950 border border-slate-800 rounded-lg pl-8 pr-3 py-1.5 text-xs text-white font-mono placeholder:text-slate-600 focus:outline-none focus:border-indigo-500">
+      </div>
+
+      <!-- Status Filter Dropdown -->
+      <select name="status" class="bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-300 font-mono focus:outline-none focus:border-indigo-500">
+        <option value="" {% if not status_filter %}selected{% endif %}>All Statuses</option>
+        <option value="SUCCESS" {% if status_filter == 'SUCCESS' %}selected{% endif %}>SUCCESS</option>
+        <option value="PARTIAL" {% if status_filter == 'PARTIAL' %}selected{% endif %}>PARTIAL</option>
+        <option value="FAILED" {% if status_filter == 'FAILED' %}selected{% endif %}>FAILED</option>
+        <option value="SKIPPED_SCHEDULE" {% if status_filter == 'SKIPPED_SCHEDULE' %}selected{% endif %}>SKIPPED_SCHEDULE</option>
+      </select>
+
+      <!-- Task ID Filter Dropdown -->
+      <select name="task_id" class="bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-300 font-mono focus:outline-none focus:border-indigo-500">
+        <option value="" {% if not task_id_filter %}selected{% endif %}>All Tasks</option>
+        {% for tid in task_ids %}
+        <option value="{{ tid }}" {% if task_id_filter == tid %}selected{% endif %}>{{ tid }}</option>
+        {% endfor %}
+      </select>
+
+      <!-- Page Size Selector -->
+      <select name="page_size" class="bg-slate-950 border border-slate-800 rounded-lg px-2 py-1.5 text-xs text-slate-300 font-mono focus:outline-none focus:border-indigo-500">
+        <option value="10" {% if page_size == 10 %}selected{% endif %}>10 per page</option>
+        <option value="25" {% if page_size == 25 or not page_size %}selected{% endif %}>25 per page</option>
+        <option value="50" {% if page_size == 50 %}selected{% endif %}>50 per page</option>
+        <option value="100" {% if page_size == 100 %}selected{% endif %}>100 per page</option>
+      </select>
+
+      <!-- Reset Filters Button -->
+      <a href="/" hx-get="/dashboard/logs?page=1&page_size=25" hx-target="#logs-table-container" onclick="document.getElementById('logs-filter-form').reset();" class="inline-flex items-center gap-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs px-2.5 py-1.5 rounded-lg transition-colors cursor-pointer font-mono">
+        <i data-lucide="rotate-ccw" class="w-3 h-3"></i>
+        <span>Reset</span>
+      </a>
+    </form>
   </div>
 
-  {% if logs %}
-  <div class="overflow-x-auto">
-    <table class="w-full text-left text-xs divide-y divide-slate-800/70">
-      <thead class="bg-slate-950/60 text-slate-400 font-mono uppercase tracking-wider sticky top-0">
-        <tr>
-          <th class="py-3 px-4">ID</th>
-          <th class="py-3 px-4">Task ID</th>
-          <th class="py-3 px-4">Batch ID</th>
-          <th class="py-3 px-4">Status</th>
-          <th class="py-3 px-4">Sent</th>
-          <th class="py-3 px-4">Duration</th>
-          <th class="py-3 px-4">Attempts</th>
-          <th class="py-3 px-4">Executed At</th>
-        </tr>
-      </thead>
-      <tbody class="divide-y divide-slate-800/50 text-slate-300">
-        {% for log in logs %}
-        <tr class="hover:bg-slate-800/40 transition-colors">
-          <td class="py-3 px-4 font-mono text-slate-500">{{ log.id }}</td>
-          <td class="py-3 px-4 font-mono font-medium text-white">{{ log.task_id }}</td>
-          <td class="py-3 px-4 font-mono text-slate-400">{{ log.batch_id or "-" }}</td>
-          <td class="py-3 px-4">
-            {% if log.status == 'SUCCESS' %}
-              <span class="badge-success"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>SUCCESS</span>
-            {% elif log.status == 'FAILED' %}
-              <span class="badge-failed"><span class="w-1.5 h-1.5 rounded-full bg-rose-400"></span>FAILED</span>
-            {% elif log.status == 'PARTIAL' %}
-              <span class="badge-partial"><span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>PARTIAL</span>
-            {% else %}
-              <span class="badge-skipped"><span class="w-1.5 h-1.5 rounded-full bg-slate-400"></span>{{ log.status }}</span>
-            {% endif %}
-          </td>
-          <td class="py-3 px-4 font-mono">{{ log.sent_count }}</td>
-          <td class="py-3 px-4 font-mono text-slate-400">{{ log.duration_ms }} ms</td>
-          <td class="py-3 px-4 font-mono text-slate-400">{{ log.attempt_count }}</td>
-          <td class="py-3 px-4 font-mono text-slate-400 whitespace-nowrap">{{ log.executed_at }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+  <div id="logs-table-container">
+    {% include "_logs_table.html" %}
   </div>
-  {% else %}
-  <div class="p-12 text-center text-slate-500 flex flex-col items-center justify-center gap-2">
-    <i data-lucide="inbox" class="w-8 h-8 text-slate-600"></i>
-    <p class="text-sm font-medium">No execution logs available yet.</p>
-    <p class="text-xs">Run a manual dispatch or wait for scheduled triggers.</p>
-  </div>
-  {% endif %}
 </div>
 {% endblock %}

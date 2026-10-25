@@ -1,0 +1,80 @@
+{% if logs %}
+<div class="overflow-x-auto">
+  <table class="w-full text-left text-xs divide-y divide-slate-800/70">
+    <thead class="bg-slate-950/60 text-slate-400 font-mono uppercase tracking-wider sticky top-0">
+      <tr>
+        <th class="py-3 px-4">ID</th>
+        <th class="py-3 px-4">Task ID</th>
+        <th class="py-3 px-4">Batch ID</th>
+        <th class="py-3 px-4">Status</th>
+        <th class="py-3 px-4">Sent</th>
+        <th class="py-3 px-4">Duration</th>
+        <th class="py-3 px-4">Attempts</th>
+        <th class="py-3 px-4">Executed At</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-slate-800/50 text-slate-300">
+      {% for log in logs %}
+      <tr class="hover:bg-slate-800/40 transition-colors">
+        <td class="py-3 px-4 font-mono text-slate-500">{{ log.id }}</td>
+        <td class="py-3 px-4 font-mono font-medium text-white">{{ log.task_id }}</td>
+        <td class="py-3 px-4 font-mono text-slate-400">{{ log.batch_id or "-" }}</td>
+        <td class="py-3 px-4">
+          {% if log.status == 'SUCCESS' %}
+            <span class="badge-success"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>SUCCESS</span>
+          {% elif log.status == 'FAILED' %}
+            <span class="badge-failed"><span class="w-1.5 h-1.5 rounded-full bg-rose-400"></span>FAILED</span>
+          {% elif log.status == 'PARTIAL' %}
+            <span class="badge-partial"><span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>PARTIAL</span>
+          {% else %}
+            <span class="badge-skipped"><span class="w-1.5 h-1.5 rounded-full bg-slate-400"></span>{{ log.status }}</span>
+          {% endif %}
+        </td>
+        <td class="py-3 px-4 font-mono">{{ log.sent_count }}</td>
+        <td class="py-3 px-4 font-mono text-slate-400">{{ log.duration_ms }} ms</td>
+        <td class="py-3 px-4 font-mono text-slate-400">{{ log.attempt_count }}</td>
+        <td class="py-3 px-4 font-mono text-slate-400 whitespace-nowrap">{{ log.executed_at }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="p-12 text-center text-slate-500 flex flex-col items-center justify-center gap-2">
+  <i data-lucide="inbox" class="w-8 h-8 text-slate-600"></i>
+  <p class="text-sm font-medium">No execution logs available matching your filter.</p>
+  <p class="text-xs">Try resetting your search query or status filter.</p>
+</div>
+{% endif %}
+
+<!-- Pagination Footer -->
+<div class="bg-slate-900/90 border-t border-slate-800 px-4 py-3 flex items-center justify-between text-xs text-slate-400 font-mono">
+  <div>
+    Showing {{ start_idx }}–{{ end_idx }} of {{ total_logs }} execution logs (Page {{ page }} of {{ total_pages }})
+  </div>
+  <div class="flex items-center gap-1.5">
+    {% if page > 1 %}
+      <button hx-get="/dashboard/logs?page=1" hx-include="#logs-filter-form" hx-target="#logs-table-container" class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors">First</button>
+      <button hx-get="/dashboard/logs?page={{ page - 1 }}" hx-include="#logs-filter-form" hx-target="#logs-table-container" class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors">Prev</button>
+    {% else %}
+      <button disabled class="px-2 py-1 rounded bg-slate-950 text-slate-600 cursor-not-allowed">First</button>
+      <button disabled class="px-2 py-1 rounded bg-slate-950 text-slate-600 cursor-not-allowed">Prev</button>
+    {% endif %}
+
+    {% for p in page_range %}
+      {% if p == page %}
+        <span class="px-2.5 py-1 rounded bg-indigo-600 text-white font-bold">{{ p }}</span>
+      {% else %}
+        <button hx-get="/dashboard/logs?page={{ p }}" hx-include="#logs-filter-form" hx-target="#logs-table-container" class="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors">{{ p }}</button>
+      {% endif %}
+    {% endfor %}
+
+    {% if page < total_pages %}
+      <button hx-get="/dashboard/logs?page={{ page + 1 }}" hx-include="#logs-filter-form" hx-target="#logs-table-container" class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors">Next</button>
+      <button hx-get="/dashboard/logs?page={{ total_pages }}" hx-include="#logs-filter-form" hx-target="#logs-table-container" class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors">Last</button>
+    {% else %}
+      <button disabled class="px-2 py-1 rounded bg-slate-950 text-slate-600 cursor-not-allowed">Next</button>
+      <button disabled class="px-2 py-1 rounded bg-slate-950 text-slate-600 cursor-not-allowed">Last</button>
+    {% endif %}
+  </div>
+</div>

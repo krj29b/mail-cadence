@@ -564,6 +564,8 @@ class DatabaseRepository:
         limit: int = 50,
         status_filter: str | None = None,
         task_id_filter: str | None = None,
+        offset: int = 0,
+        search_query: str | None = None,
     ) -> list[dict[str, Any]]:
         query = [
             "SELECT id, batch_id, task_id, status, sent_count, failed_recipients,",
@@ -573,18 +575,24 @@ class DatabaseRepository:
         conditions: list[str] = []
         params: list[Any] = []
 
-        if status_filter:
+        if status_filter and status_filter.strip():
             conditions.append("status = ?")
-            params.append(status_filter)
-        if task_id_filter:
+            params.append(status_filter.strip())
+        if task_id_filter and task_id_filter.strip():
             conditions.append("task_id = ?")
-            params.append(task_id_filter)
+            params.append(task_id_filter.strip())
+        if search_query and search_query.strip():
+            pattern = f"%{search_query.strip()}%"
+            conditions.append(
+                "(task_id LIKE ? OR batch_id LIKE ? OR COALESCE(error_details, '') LIKE ?)"
+            )
+            params.extend([pattern, pattern, pattern])
 
         if conditions:
             query.append("WHERE " + " AND ".join(conditions))
 
-        query.append("ORDER BY id DESC LIMIT ?")
-        params.append(limit)
+        query.append("ORDER BY id DESC LIMIT ? OFFSET ?")
+        params.extend([limit, offset])
 
         rows = self.conn.execute(" ".join(query), params).fetchall()
         logs: list[dict[str, Any]] = []
@@ -595,6 +603,35 @@ class DatabaseRepository:
                     d["failed_recipients"] = json.loads(d["failed_recipients"])
             logs.append(d)
         return logs
+
+    def count_execution_logs(
+        self,
+        status_filter: str | None = None,
+        task_id_filter: str | None = None,
+        search_query: str | None = None,
+    ) -> int:
+        query = ["SELECT COUNT(*) FROM execution_logs"]
+        conditions: list[str] = []
+        params: list[Any] = []
+
+        if status_filter and status_filter.strip():
+            conditions.append("status = ?")
+            params.append(status_filter.strip())
+        if task_id_filter and task_id_filter.strip():
+            conditions.append("task_id = ?")
+            params.append(task_id_filter.strip())
+        if search_query and search_query.strip():
+            pattern = f"%{search_query.strip()}%"
+            conditions.append(
+                "(task_id LIKE ? OR batch_id LIKE ? OR COALESCE(error_details, '') LIKE ?)"
+            )
+            params.extend([pattern, pattern, pattern])
+
+        if conditions:
+            query.append("WHERE " + " AND ".join(conditions))
+
+        row = self.conn.execute(" ".join(query), params).fetchone()
+        return int(row[0]) if row and row[0] is not None else 0
 
     def get_dashboard_stats(self) -> dict[str, Any]:
         total_tasks = self.conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
