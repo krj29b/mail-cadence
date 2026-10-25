@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-from mail_cadence.mailer import AsyncMailer
+from mail_cadence.mailer import AUTOESCAPE_EXTENSIONS, AsyncMailer
 from mail_cadence.models import (
     BatchSummaryReport,
     ReportSettings,
@@ -56,13 +56,13 @@ class ReportGenerator:
         else:
             self.template_dir = Path(template_dir)
 
-        if self.template_dir.exists():
-            self.env = Environment(
-                loader=FileSystemLoader(str(self.template_dir)),
-                autoescape=select_autoescape(["html", "xml"]),
-            )
-        else:
-            self.env = Environment(autoescape=select_autoescape(["html", "xml"]))
+        loader = FileSystemLoader(str(self.template_dir)) if self.template_dir.exists() else None
+        self.env = Environment(
+            loader=loader,
+            autoescape=select_autoescape(
+                enabled_extensions=AUTOESCAPE_EXTENSIONS, default_for_string=True
+            ),
+        )
 
     def _render_template(
         self, template_name: str, context: dict[str, Any], fallback_content: str

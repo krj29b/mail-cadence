@@ -303,6 +303,8 @@ To prevent duplicate dispatches during an active schedule window:
   - `is_task_eligible()` returns `False`.
   - The task is skipped with status `SKIPPED_SCHEDULE`.
 - If `last_run` falls outside the active window instance or `last_status != SUCCESS` (e.g. `FAILED` or `PARTIAL`), the task is marked eligible for re-execution.
+- Dry-run executions are written to `execution_logs` only; they never update `last_run` / `last_status`, so they cannot block a real dispatch.
+- The status report is sent only when at least one task was executed (success, partial or failed) and `report_settings` is configured.
 
 ---
 
@@ -413,8 +415,12 @@ stateDiagram-v2
 - Explicitly enforces that `resolved_path` must reside strictly within `base_dir` via `resolved_path.relative_to(base_dir)`. Attempting to reference files outside the template base directory raises a `ValueError`.
 
 ### 3. Cross-Site Scripting (XSS) Prevention
-- Jinja2 environment configured with `autoescape=select_autoescape(["html", "xml"])`.
-- Ensures context variables rendered into HTML email templates are auto-escaped.
+- Jinja2 environments (task renderer and status report) use `select_autoescape(enabled_extensions=mailer.AUTOESCAPE_EXTENSIONS, default_for_string=True)`, which enables autoescape for `html`, `htm`, `xml` and the compound `html.j2`, `htm.j2`, `xml.j2` extensions, and for templates rendered from strings.
+- Ensures context variables and SMTP error details rendered into HTML emails are auto-escaped. `*.txt.j2` templates are not escaped.
+
+### 5. Web Panel Access Control
+- Without `ADMIN_USER` and `ADMIN_PASSWORD` every request is refused with `503`. `mail-cadence serve --insecure-no-auth` opts out, and is only accepted with a loopback `--host`.
+- State-changing requests (`POST`, `PUT`, `PATCH`, `DELETE`) are rejected with `403` when `Sec-Fetch-Site` is not `same-origin`/`none` or when `Origin` does not match `Host` (CSRF protection for Basic Auth).
 
 ### 4. SMTP Header Injection Prevention
 - Header string fields (`sender`, `recipient`, `subject`, `to`, `cc`, `bcc`) are validated using `_check_no_newlines` Pydantic validators in `models.py`.

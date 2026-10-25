@@ -129,6 +129,10 @@ class DatabaseRepository:
 
     # --- ReportSettings Operations ---
 
+    def has_report_settings(self) -> bool:
+        row = self.conn.execute("SELECT 1 FROM report_settings WHERE id = 1").fetchone()
+        return row is not None
+
     def get_report_settings(self) -> ReportSettings:
         row = self.conn.execute(
             """
@@ -354,7 +358,15 @@ class DatabaseRepository:
         self,
         result: TaskExecutionResult,
         batch_id: str | None = None,
+        update_state: bool = True,
+        executed_at: datetime | None = None,
     ) -> None:
+        """Append an execution log entry and, unless disabled, update the task window state.
+
+        Pass ``update_state=False`` for simulated (dry-run) executions so they never
+        mark a task as dispatched in its active window. ``executed_at`` overrides the
+        ``last_run`` timestamp (defaults to the current time).
+        """
         failed_recipients_str = json.dumps(result.failed_recipients)
         with self.conn:
             self.conn.execute(
@@ -376,8 +388,11 @@ class DatabaseRepository:
                 ),
             )
 
-            if result.status != TaskExecutionStatus.SKIPPED_SCHEDULE:
-                now_utc_str = datetime.now(UTC).isoformat()
+            if update_state and result.status != TaskExecutionStatus.SKIPPED_SCHEDULE:
+                run_at = executed_at or datetime.now(UTC)
+                if run_at.tzinfo is None:
+                    run_at = run_at.replace(tzinfo=UTC)
+                now_utc_str = run_at.astimezone(UTC).isoformat()
                 self.conn.execute(
                     """
                     UPDATE tasks

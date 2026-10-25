@@ -51,7 +51,7 @@ def tmp_db_path(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def client(tmp_db_path: Path, tmp_path: Path) -> TestClient:
-    app = create_app(db_path=tmp_db_path, template_dir=tmp_path)
+    app = create_app(db_path=tmp_db_path, template_dir=tmp_path, allow_insecure_no_auth=True)
     return TestClient(app)
 
 
@@ -169,7 +169,12 @@ def test_tasks_default_sender_from_settings(tmp_db_path: Path, tmp_path: Path) -
         admin_user=None,
         admin_password=None,
     )
-    app = create_app(db_path=tmp_db_path, template_dir=tmp_path, settings=custom_settings)
+    app = create_app(
+        db_path=tmp_db_path,
+        template_dir=tmp_path,
+        settings=custom_settings,
+        allow_insecure_no_auth=True,
+    )
     c = TestClient(app)
 
     resp = c.get("/tasks")
@@ -318,11 +323,21 @@ def test_settings_view_and_update(client: TestClient) -> None:
 
 
 def test_web_basic_auth_disabled_and_enabled(tmp_db_path: Path, tmp_path: Path) -> None:
-    # 1. Unset admin_user / admin_password -> Open access
+    # 1. Unset admin_user / admin_password -> access refused by default
+    closed_app = create_app(
+        db_path=tmp_db_path,
+        template_dir=tmp_path,
+        settings=Settings(admin_user=None, admin_password=None),
+    )
+    res_closed = TestClient(closed_app).get("/")
+    assert res_closed.status_code == 503
+
+    # 1b. Explicit opt-in -> open access
     open_app = create_app(
         db_path=tmp_db_path,
         template_dir=tmp_path,
         settings=Settings(admin_user=None, admin_password=None),
+        allow_insecure_no_auth=True,
     )
     open_client = TestClient(open_app)
     res_open = open_client.get("/")
@@ -348,7 +363,7 @@ def test_web_basic_auth_disabled_and_enabled(tmp_db_path: Path, tmp_path: Path) 
 
 
 def test_web_dispatch_trigger_run(tmp_db_path: Path, tmp_path: Path) -> None:
-    app = create_app(db_path=tmp_db_path, template_dir=tmp_path)
+    app = create_app(db_path=tmp_db_path, template_dir=tmp_path, allow_insecure_no_auth=True)
     client = TestClient(app)
 
     # Trigger run with dry_run
@@ -374,7 +389,7 @@ def test_web_dispatch_trigger_task_run(tmp_db_path: Path, tmp_path: Path) -> Non
     )
     conn.close()
 
-    app = create_app(db_path=tmp_db_path, template_dir=tmp_path)
+    app = create_app(db_path=tmp_db_path, template_dir=tmp_path, allow_insecure_no_auth=True)
     client = TestClient(app)
 
     res = client.post("/tasks/task_single_run/run")
@@ -440,7 +455,7 @@ def test_task_edit_resets_window_idempotency_and_skip_preserves_success(
     assert last_st == TaskExecutionStatus.SUCCESS
     conn.close()
 
-    app = create_app(db_path=tmp_db_path, template_dir=tmp_path)
+    app = create_app(db_path=tmp_db_path, template_dir=tmp_path, allow_insecure_no_auth=True)
     c = TestClient(app)
 
     # Still shows Sent in Window on /tasks
@@ -471,7 +486,7 @@ def test_task_edit_resets_window_idempotency_and_skip_preserves_success(
 
 @pytest.mark.asyncio
 async def test_web_dispatch_lock_conflict(tmp_db_path: Path, tmp_path: Path) -> None:
-    app = create_app(db_path=tmp_db_path, template_dir=tmp_path)
+    app = create_app(db_path=tmp_db_path, template_dir=tmp_path, allow_insecure_no_auth=True)
     client = TestClient(app)
 
     # Acquire lock manually
@@ -550,7 +565,7 @@ def test_template_discovery_and_window_status(tmp_db_path: Path, tmp_path: Path)
     )
     conn.close()
 
-    app = create_app(db_path=tmp_db_path, template_dir=tmp_path)
+    app = create_app(db_path=tmp_db_path, template_dir=tmp_path, allow_insecure_no_auth=True)
     c = TestClient(app)
 
     # Check template discovery & window open indicator
@@ -680,3 +695,28 @@ def test_dashboard_logs_htmx_filtering_and_pagination(
     assert resp_htmx.status_code == 200
     assert "<table" in resp_htmx.text
     assert "<html" not in resp_htmx.text
+
+
+def test_web_rejects_cross_site_state_changes(client: TestClient) -> None:
+    form = {"dry_run": "true"}
+
+    cross_fetch = client.post("/dispatch/run", data=form, headers={"Sec-Fetch-Site": "cross-site"})
+    assert cross_fetch.status_code == 403
+
+    foreign_origin = client.post(
+        "/dispatch/run", data=form, headers={"Origin": "https://evil.example.com"}
+    )
+    assert foreign_origin.status_code == 403
+
+    cross_delete = client.delete("/tasks/any", headers={"Sec-Fetch-Site": "same-site"})
+    assert cross_delete.status_code == 403
+
+    same_origin = client.post(
+        "/dispatch/run",
+        data=form,
+        headers={"Origin": "http://testserver", "Sec-Fetch-Site": "same-origin"},
+    )
+    assert same_origin.status_code == 200
+
+    # Safe methods are not affected.
+    assert client.get("/", headers={"Sec-Fetch-Site": "cross-site"}).status_code == 200

@@ -9,6 +9,7 @@ from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import jinja2
@@ -18,6 +19,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
 
+from mail_cadence import __version__
 from mail_cadence.cli import run_dispatch_pipeline
 from mail_cadence.database import get_connection, init_db
 from mail_cadence.mailer import AsyncMailer, TemplateRenderer
@@ -99,27 +101,58 @@ def verify_credentials(
     admin_user = settings.admin_user
     admin_password = settings.admin_password
 
-    if admin_user and admin_password:
-        if not credentials:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Unauthorized",
-                headers={"WWW-Authenticate": "Basic"},
-            )
-        user_ok = secrets.compare_digest(
-            credentials.username.encode("utf-8"),
-            admin_user.encode("utf-8"),
+    if not admin_user or not admin_password:
+        if getattr(request.app.state, "allow_insecure_no_auth", False):
+            return
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "Admin panel credentials are not configured. Set ADMIN_USER and ADMIN_PASSWORD."
+            ),
         )
-        pass_ok = secrets.compare_digest(
-            credentials.password.encode("utf-8"),
-            admin_password.encode("utf-8"),
-        )
-        if not (user_ok and pass_ok):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Unauthorized",
-                headers={"WWW-Authenticate": "Basic"},
-            )
+
+    unauthorized = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Unauthorized",
+        headers={"WWW-Authenticate": "Basic"},
+    )
+    if not credentials:
+        raise unauthorized
+    user_ok = secrets.compare_digest(
+        credentials.username.encode("utf-8"),
+        admin_user.encode("utf-8"),
+    )
+    pass_ok = secrets.compare_digest(
+        credentials.password.encode("utf-8"),
+        admin_password.encode("utf-8"),
+    )
+    if not (user_ok and pass_ok):
+        raise unauthorized
+
+
+_UNSAFE_METHODS: frozenset[str] = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+def verify_same_origin(request: Request) -> None:
+    """Reject state-changing requests sent by other sites (CSRF protection).
+
+    Browsers attach Basic Auth credentials automatically, so cross-site requests are
+    refused based on the ``Sec-Fetch-Site`` and ``Origin`` headers.
+    """
+    if request.method not in _UNSAFE_METHODS:
+        return
+    forbidden = HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Cross-site request rejected.",
+    )
+    fetch_site = request.headers.get("sec-fetch-site")
+    if fetch_site is not None and fetch_site.lower() not in ("same-origin", "none"):
+        raise forbidden
+    origin = request.headers.get("origin")
+    if origin is not None:
+        host = request.headers.get("host", "")
+        if urlsplit(origin).netloc.lower() != host.lower():
+            raise forbidden
 
 
 def _is_valid_task_template(path: Path, base_path: Path) -> bool:
@@ -923,13 +956,20 @@ def create_app(
     db_path: str | Path = "mail_cadence.db",
     template_dir: str | Path = ".",
     settings: Settings | None = None,
+    allow_insecure_no_auth: bool = False,
 ) -> FastAPI:
+    """Build the admin panel app.
+
+    Without ADMIN_USER/ADMIN_PASSWORD every request is refused with 503, unless
+    ``allow_insecure_no_auth`` is set explicitly (intended for local use only).
+    """
     app = FastAPI(
         title="MailCadence Admin Panel",
         description="Lightweight web administration and observability panel",
-        version="0.2.0",
-        dependencies=[Depends(verify_credentials)],
+        version=__version__,
+        dependencies=[Depends(verify_credentials), Depends(verify_same_origin)],
     )
+    app.state.allow_insecure_no_auth = allow_insecure_no_auth
     app.state.db_path = str(db_path)
     app.state.template_dir = str(template_dir)
     app.state.custom_settings = settings

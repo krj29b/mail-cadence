@@ -26,6 +26,10 @@ _KNOWN_TEMPLATE_PREFIXES: tuple[str, ...] = (
     "templates/",
 )
 
+# select_autoescape() only matches the end of the file name, so compound
+# extensions such as ".html.j2" must be listed explicitly.
+AUTOESCAPE_EXTENSIONS: tuple[str, ...] = ("html", "htm", "xml", "html.j2", "htm.j2", "xml.j2")
+
 
 class TemplateRenderer:
     def __init__(self, template_dir: str | Path = ".") -> None:
@@ -35,7 +39,9 @@ class TemplateRenderer:
             search_paths.append(str(PACKAGE_TEMPLATES_DIR))
         self.env = Environment(
             loader=FileSystemLoader(search_paths),
-            autoescape=select_autoescape(["html", "xml"]),
+            autoescape=select_autoescape(
+                enabled_extensions=AUTOESCAPE_EXTENSIONS, default_for_string=True
+            ),
         )
 
     @staticmethod
@@ -298,6 +304,17 @@ class AsyncMailer:
         finally:
             await self._quit_if_connected(client)
 
+    @staticmethod
+    def _smtp_exception_result(
+        exc: aiosmtplib.SMTPException,
+    ) -> tuple[bool, str | None, dict[str, Any]]:
+        if isinstance(exc, aiosmtplib.SMTPRecipientsRefused):
+            # All recipients refused: report per-recipient codes so 5xx/4xx are classified
+            # the same way as on partial delivery.
+            refused: dict[str, Any] = {r.recipient: r for r in exc.recipients}
+            return False, f"All recipients refused: {list(refused.keys())}", refused
+        return False, f"SMTP Exception: {exc}", {}
+
     async def send_single_message(
         self,
         msg: EmailMessage | MIMEMultipart,
@@ -323,7 +340,7 @@ class AsyncMailer:
         except aiosmtplib.SMTPResponseException as exc:
             return False, f"SMTP error {exc.code}: {exc.message}", {"smtp_code": exc.code}
         except aiosmtplib.SMTPException as exc:
-            return False, f"SMTP Exception: {exc}", {}
+            return self._smtp_exception_result(exc)
         except Exception as exc:
             return False, f"Network/Connection error: {exc}", {}
 
@@ -349,6 +366,23 @@ class AsyncMailer:
             else:
                 next_pending.append(recipient)
         return succeeded, perm_failed, next_pending
+
+    @classmethod
+    def _classify_attempt(
+        cls,
+        success: bool,
+        errors: dict[str, Any],
+        pending_recipients: list[str],
+    ) -> tuple[list[str], list[str], list[str]]:
+        """Split the attempted recipients into (succeeded, permanently failed, still pending)."""
+        if success and not errors:
+            return list(pending_recipients), [], []
+        if errors and "smtp_code" not in errors:
+            # Per-recipient errors (partial delivery or all recipients refused).
+            return cls._partition_partial_errors(pending_recipients, errors)
+        if cls._is_permanent_smtp_error(errors):
+            return [], list(pending_recipients), []
+        return [], [], list(pending_recipients)
 
     async def _execute_delivery_attempts(
         self,
@@ -376,28 +410,16 @@ class AsyncMailer:
                 recipients=pending_recipients,
             )
 
-            if success:
-                if errors:
-                    succeeded, perm_failed, pending_recipients = self._partition_partial_errors(
-                        pending_recipients, errors
-                    )
-                    successful_recipients.extend(succeeded)
-                    permanently_failed_recipients.extend(perm_failed)
-                    last_error = error_msg
-                else:
-                    successful_recipients.extend(pending_recipients)
-                    pending_recipients = []
-                    last_error = None
-                    break
-            else:
-                last_error = error_msg
+            last_error = error_msg
+            if not success:
                 logger.warning(
                     f"Task {task.id} attempt {attempts}/{max_attempts} failed: {error_msg}"
                 )
-                if self._is_permanent_smtp_error(errors):
-                    permanently_failed_recipients.extend(pending_recipients)
-                    pending_recipients = []
-                    break
+            succeeded, perm_failed, pending_recipients = self._classify_attempt(
+                success, errors, pending_recipients
+            )
+            successful_recipients.extend(succeeded)
+            permanently_failed_recipients.extend(perm_failed)
 
             if attempts < max_attempts and pending_recipients:
                 backoff = 0.5 * (2 ** (attempts - 1))

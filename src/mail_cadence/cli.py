@@ -15,6 +15,7 @@ from mail_cadence.database import get_connection, init_db
 from mail_cadence.mailer import AsyncMailer, TemplateRenderer
 from mail_cadence.models import (
     PRIORITY_ORDER,
+    BatchSummaryReport,
     MailConfiguration,
     MailTask,
     Settings,
@@ -36,6 +37,9 @@ app = typer.Typer(
     help="Asynchronous MailCadence email dispatch and reporting engine",
     invoke_without_command=True,
 )
+
+
+_LOOPBACK_HOSTS: frozenset[str] = frozenset({"127.0.0.1", "::1", "localhost"})
 
 
 def _resolve_db_path(db: str) -> str:
@@ -127,6 +131,23 @@ def _partition_eligible_tasks(
     return eligible_tasks, results
 
 
+async def _send_report_if_needed(
+    report: BatchSummaryReport,
+    mail_config: MailConfiguration,
+    has_report_settings: bool,
+    mailer: AsyncMailer,
+    logger: logging.Logger,
+) -> None:
+    executed = report.successful_tasks + report.partial_tasks + report.failed_tasks
+    if executed == 0:
+        logger.info("No tasks were executed in this batch; status report not sent.")
+        return
+    if not has_report_settings:
+        logger.warning("Report settings are not configured; status report not sent.")
+        return
+    await ReportGenerator().send_report(report, mail_config.report_settings, mailer)
+
+
 def version_callback(value: bool) -> None:
     if value:
         typer.echo(f"mail-cadence {__version__}")
@@ -203,7 +224,9 @@ async def run_dispatch_pipeline(
                 async with sem:
                     logger.info(f"Executing task {task.id}...")
                     res = await mailer.dispatch_task(task, rate_limiter=rate_limiter)
-                    repo.log_task_execution(res, batch_id=batch_id)
+                    repo.log_task_execution(
+                        res, batch_id=batch_id, update_state=not dry_run, executed_at=ref_dt
+                    )
                     return res
 
             if eligible_tasks:
@@ -223,8 +246,9 @@ async def run_dispatch_pipeline(
 
             end_time = datetime.now(UTC)
             report = aggregate_summary_report(results, start_time, end_time)
-            reporter = ReportGenerator()
-            await reporter.send_report(report, mail_config.report_settings, mailer)
+            await _send_report_if_needed(
+                report, mail_config, repo.has_report_settings(), mailer, logger
+            )
 
         logger.info("MailCadence execution complete.")
         return 0 if report.failed_tasks == 0 else 2
@@ -450,17 +474,35 @@ def cli_serve(
             help="Path to template directory for live task preview",
         ),
     ] = ".",
+    insecure_no_auth: Annotated[
+        bool,
+        typer.Option(
+            "--insecure-no-auth",
+            help="Allow access without ADMIN_USER/ADMIN_PASSWORD (only with a loopback --host)",
+        ),
+    ] = False,
 ) -> None:
     """Launch the web administration and observability panel."""
     import uvicorn
 
     from mail_cadence.web import create_app
 
+    if insecure_no_auth and host not in _LOOPBACK_HOSTS:
+        typer.echo(
+            "--insecure-no-auth is only allowed with --host 127.0.0.1, ::1 or localhost.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
     resolved_db = _resolve_db_path(db)
     with closing(get_connection(resolved_db)) as conn:
         init_db(conn)
 
-    web_app = create_app(db_path=resolved_db, template_dir=template_dir)
+    web_app = create_app(
+        db_path=resolved_db,
+        template_dir=template_dir,
+        allow_insecure_no_auth=insecure_no_auth,
+    )
     uvicorn.run(web_app, host=host, port=port)
 
 

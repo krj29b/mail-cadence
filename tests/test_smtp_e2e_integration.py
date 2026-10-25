@@ -307,12 +307,8 @@ async def test_full_dispatch_pipeline_real_smtp(
 
         assert code2 == 0
 
-        # SMTP server should receive only 1 message (the report email), no duplicate task email
-        assert len(smtp_server.received_messages) == 1
-        second_report = smtp_server.received_messages[0]
-        assert second_report.rcpt_to == ["admin@example.com"]
-        second_report_body = get_message_body_str(second_report.message)
-        assert "Skipped: 1" in second_report_body
+        # No duplicate task email, and no report either: nothing was executed in this batch
+        assert len(smtp_server.received_messages) == 0
 
         # Check execution_logs table now has a SKIPPED_SCHEDULE log
         all_logs = conn.execute(

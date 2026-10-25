@@ -32,5 +32,14 @@ Before declaring code readiness, run all of the following tools. None of them ma
 ## 4. Security (`models.py`, `xml_loader.py`, `mailer.py`)
 * **XML Parsing:** Every XML file before being passed to `pydantic-xml` must be validated via `defusedxml.ElementTree` to protect against XXE and entity expansion attacks.
 * **SMTP Header Injection Protection:** All fields going into message headers (`sender`, `recipient`, `subject`, `to`, `cc`, `bcc`) must be validated for the absence of `\r` and `\n` characters (`_check_no_newlines`).
-* **Jinja2 Templates:** `TemplateRenderer` must validate paths using the `resolved_path.relative_to(base_dir)` method (Path Traversal protection) and keep `select_autoescape(["html", "xml"])` enabled.
+* **Jinja2 Templates:** `TemplateRenderer` must validate paths using the `resolved_path.relative_to(base_dir)` method (Path Traversal protection) and keep autoescape enabled via `select_autoescape(enabled_extensions=AUTOESCAPE_EXTENSIONS, default_for_string=True)` (`mailer.AUTOESCAPE_EXTENSIONS`). Note that `select_autoescape(["html", "xml"])` alone does **not** cover compound extensions such as `*.html.j2`.
+* **Dry-run:** Simulated executions must never update `tasks.last_run` / `tasks.last_status` (`log_task_execution(..., update_state=False)`).
+* **Web panel:** Without `ADMIN_USER`/`ADMIN_PASSWORD` the panel refuses access (503) unless started with `serve --insecure-no-auth` on a loopback host. State-changing requests from other origins are rejected (`verify_same_origin`).
 * **Secrets and Credentials:** Never store real passwords or `.env` files in the repository. In tests, use exclusively local mock/sink servers on `127.0.0.1` and dummy domains (`@example.com`, `@localhost`).
+
+## 5. Strict Anti-Tampering & Test Authenticity Rules:
+* DO NOT delete, modify, or weaken any existing test functions or `assert` statements in `tests/` unless an API signature explicitly changed.
+* DO NOT mock `DatabaseRepository`, `TaskScheduler`, `TemplateRenderer`, or SQLite connections. Only external I/O (`aiosmtplib.SMTP`) may be mocked.
+* Every new test must verify real state transitions (actual SQLite rows via `DatabaseRepository`, real rendered HTML/DOM elements, or actual parsed `EmailMessage` MIME parts)—never just `status_code == 200`.
+* Do not introduce test-only branches or hardcoded test IDs inside `src/mail_cadence/`.
+* Verify via `git diff tests/` before finishing that no existing assertions were removed.

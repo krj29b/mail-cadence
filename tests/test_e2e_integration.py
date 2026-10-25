@@ -1,5 +1,8 @@
+import sqlite3
+from contextlib import closing
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -38,38 +41,45 @@ async def test_run_dispatch_pipeline_idempotency_two_runs(tmp_path: Path) -> Non
     # Reference time: 2026-10-17 08:00 Warsaw time (Morning schedule active: 06:00-12:00)
     ref_dt = datetime(2026, 10, 17, 8, 0, tzinfo=ZoneInfo("Europe/Warsaw"))
 
-    # First run
-    code1 = await run_dispatch_pipeline(
-        tasks_xml=tasks_file,
-        schedule_xml=schedules_file,
-        dry_run=True,
-        verbose=True,
-        ref_dt=ref_dt,
-        db_path=str(db_file),
-    )
-    assert code1 == 0
+    async def run(dry_run: bool) -> int:
+        return await run_dispatch_pipeline(
+            tasks_xml=tasks_file,
+            schedule_xml=schedules_file,
+            dry_run=dry_run,
+            ref_dt=ref_dt,
+            db_path=str(db_file),
+        )
 
-    # Verify task state in database after first run
-    conn = get_connection(db_file)
-    repo = DatabaseRepository(conn)
-    states1 = repo.get_task_execution_states()
-    assert any(status == TaskExecutionStatus.SUCCESS for _, status in states1.values())
+    def last_log(conn: sqlite3.Connection) -> tuple[str, str | None]:
+        row = conn.execute(
+            "SELECT status, error_details FROM execution_logs "
+            "WHERE task_id = 'TASK-001' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        return row["status"], row["error_details"]
 
-    # Second run with same ref_dt and same database
-    code2 = await run_dispatch_pipeline(
-        tasks_xml=tasks_file,
-        schedule_xml=schedules_file,
-        dry_run=True,
-        verbose=True,
-        ref_dt=ref_dt,
-        db_path=str(db_file),
-    )
-    assert code2 == 0
+    fake_smtp = AsyncMock(return_value=(True, None, {}))
+    with patch("mail_cadence.mailer.AsyncMailer.send_single_message", fake_smtp):
+        # 1. Dry-run: TASK-001 (in its window) is simulated but its state stays untouched.
+        assert await run(dry_run=True) == 0
+        with closing(get_connection(db_file)) as conn:
+            states = DatabaseRepository(conn).get_task_execution_states()
+            assert states["TASK-001"] == (None, None)
+            assert last_log(conn)[0] == TaskExecutionStatus.SUCCESS.value
 
-    # Execution logs should now record SKIPPED_SCHEDULE for the second run
-    logs = conn.execute("SELECT status FROM execution_logs ORDER BY id DESC LIMIT 2").fetchall()
-    statuses = [r["status"] for r in logs]
-    assert TaskExecutionStatus.SKIPPED_SCHEDULE.value in statuses
+        # 2. Real run: TASK-001 is sent and recorded as SUCCESS at ref_dt.
+        assert await run(dry_run=False) == 0
+        with closing(get_connection(db_file)) as conn:
+            last_run, last_status = DatabaseRepository(conn).get_task_execution_states()["TASK-001"]
+            assert last_status == TaskExecutionStatus.SUCCESS
+            assert last_run == ref_dt
+
+        # 3. Second real run in the same window: TASK-001 is skipped by idempotency.
+        assert await run(dry_run=False) == 0
+        with closing(get_connection(db_file)) as conn:
+            status, reason = last_log(conn)
+            assert status == TaskExecutionStatus.SKIPPED_SCHEDULE.value
+            assert reason is not None
+            assert "already dispatched" in reason
 
 
 @pytest.mark.asyncio

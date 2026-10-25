@@ -60,6 +60,8 @@ Supported environment settings defined in `mail_cadence.models.Settings`:
 | `SMTP_START_TLS` | `false` | Enable STARTTLS command upgrade (`true`/`false`) |
 | `SMTP_TIMEOUT` | `30.0` | Timeout in seconds for SMTP operations |
 | `MAIL_CADENCE_DB` | `mail_cadence.db` | Path to SQLite database file |
+| `ADMIN_USER` | *None* | Web panel username. Without it (and `ADMIN_PASSWORD`) the panel refuses access unless started with `serve --insecure-no-auth` on a loopback host |
+| `ADMIN_PASSWORD` | *None* | Web panel password |
 
 ---
 
@@ -81,7 +83,7 @@ mail-cadence [OPTIONS]
 | `--tasks-xml` | `-t` | `PATH` | *None* | Optional path to tasks XML file to seed/upsert database |
 | `--schedule-xml` | `-s` | `PATH` | *None* | Optional path to schedule XML file to seed/upsert database |
 | `--db` | `-b` | `PATH` | `mail_cadence.db` | Path to SQLite database file (overrides `MAIL_CADENCE_DB`) |
-| `--dry-run` | `-d` | `FLAG` | `false` | Execute workflow in simulation mode without sending network SMTP requests |
+| `--dry-run` | `-d` | `FLAG` | `false` | Execute workflow in simulation mode without sending network SMTP requests. Results are logged, but task window state is not updated |
 | `--verbose` | `-v` | `FLAG` | `false` | Enable verbose debug logging output |
 
 #### Exit Codes
