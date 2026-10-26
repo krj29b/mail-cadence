@@ -12,7 +12,9 @@ Comprehensive, engineering-grade architectural specifications, database schema, 
 
 | Module | Location | Primary Responsibilities |
 | --- | --- | --- |
-| **CLI & Pipeline Engine** | `src/mail_cadence/cli.py` | Typer CLI entry points (`dispatch`, `import-xml`, `export-xml`), command-line argument parsing, environment settings resolution, and top-level pipeline orchestration via `run_dispatch_pipeline`. |
+| **Dispatch Pipeline** | `src/mail_cadence/pipeline.py` | The single dispatch orchestration used by every entry point: `run_dispatch(DispatchOptions, Settings)` (XML seeding, schedule evaluation, concurrent execution, logging, status report) and `dispatch_single_task` (manual run of one task). Opens its own SQLite connection. |
+| **CLI** | `src/mail_cadence/cli.py` | Thin Typer adapter (`dispatch`, `import-xml`, `export-xml`, `serve`): argument parsing, logging setup, settings and `--db` resolution. `run_dispatch_pipeline(...)` is kept as a backward-compatible wrapper over `pipeline.run_dispatch`. |
+| **Web Panel** | `src/mail_cadence/web.py` | Thin FastAPI/HTMX adapter. Starts `pipeline` functions in background jobs (`dispatch_jobs.py`); it does not import `cli.py`. |
 | **XML Loader & Exporter** | `src/mail_cadence/xml_loader.py` | Secure XML parsing via `defusedxml`, schema validation using `pydantic-xml` models (`MailConfiguration`, `WorkSchedules`), and bidirectional conversion between XML documents and SQLite data models. |
 | **Database & Connection Manager** | `src/mail_cadence/database.py` | SQLite connection pooling initialization, database schema DDL execution, journal mode (`WAL`), busy timeout settings, and foreign key enforcements. |
 | **Database Repository** | `src/mail_cadence/repository.py` | Data Access Object (DAO) providing transactional database operations (`upsert`, `replace`, state recovery, execution logging). Uses top-level transaction blocks (`with self.conn:`) to maintain single-statement and batch atomicity. |
@@ -29,8 +31,9 @@ The following C4 component diagram illustrates component boundaries and data flo
 
 ```mermaid
 flowchart TB
-    subgraph CLI ["CLI Layer (cli.py)"]
-        CLI_Entry["Typer CLI / Engine Runner"]
+    subgraph CLI ["Entry Points & Pipeline (cli.py, web.py -> pipeline.py)"]
+        CLI_Entry["Typer CLI / Web Panel
+-> pipeline.run_dispatch"]
         Config_Settings["Pydantic Settings (.env)"]
     end
 
@@ -332,7 +335,7 @@ To prevent duplicate dispatches during an active schedule window:
 
 ---
 
-## 5. Dispatch Pipeline & SMTP Retry Flow (`cli.py`, `mailer.py`, `reporter.py`)
+## 5. Dispatch Pipeline & SMTP Retry Flow (`pipeline.py`, `mailer.py`, `reporter.py`)
 
 ### Execution Sequence Diagram
 
@@ -340,7 +343,7 @@ To prevent duplicate dispatches during an active schedule window:
 sequenceDiagram
     autonumber
     actor CLI as CLI / Operator
-    participant Runner as Engine Runner (cli.py)
+    participant Runner as Engine Runner (pipeline.py)
     participant Repo as DatabaseRepository
     participant DB as SQLite DB
     participant Sched as TaskScheduler

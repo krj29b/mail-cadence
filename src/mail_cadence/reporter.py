@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from datetime import datetime
 
-from jinja2 import Environment, FileSystemLoader, select_autoescape
+from jinja2 import Environment, FileSystemLoader, TemplateError, select_autoescape
 
 from mail_cadence.mailer import AUTOESCAPE_EXTENSIONS, AsyncMailer
 from mail_cadence.models import (
@@ -70,7 +70,7 @@ class ReportGenerator:
         try:
             tpl = self.env.get_template(template_name)
             return tpl.render(**context)
-        except Exception as exc:
+        except (TemplateError, TypeError, ValueError) as exc:
             logger.debug(f"Falling back to default report content for {template_name}: {exc}")
             return fallback_content
 

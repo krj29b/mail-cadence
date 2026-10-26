@@ -4,19 +4,22 @@ import html
 import logging
 import re
 import time
-from collections.abc import AsyncIterator
-from email.message import EmailMessage
+from collections.abc import AsyncIterator, Sequence
+from email.message import EmailMessage, Message
 from email.mime.multipart import MIMEMultipart
 from email.utils import formatdate, make_msgid, parseaddr
 from pathlib import Path
-from typing import Any
+from types import TracebackType
+from typing import Any, Protocol
 
 import aiosmtplib
+from aiosmtplib import SMTPResponse
 from jinja2 import (
     ChoiceLoader,
     Environment,
     FileSystemLoader,
     PrefixLoader,
+    TemplateError,
     TemplateNotFound,
     select_autoescape,
 )
@@ -36,6 +39,29 @@ INTERNAL_TEMPLATES: frozenset[str] = frozenset({"report_email.html.j2", "report_
 # select_autoescape() only matches the end of the file name, so compound
 # extensions such as ".html.j2" must be listed explicitly.
 AUTOESCAPE_EXTENSIONS: tuple[str, ...] = ("html", "htm", "xml", "html.j2", "htm.j2", "xml.j2")
+
+SMTP_PERMANENT_ERROR_MIN = 500
+SMTP_PERMANENT_ERROR_MAX = 600
+
+# Errors that can come out of rendering a task template and building its message.
+RENDER_ERRORS: tuple[type[Exception], ...] = (TemplateError, ValueError, TypeError, OSError)
+# Errors a broken connection raises on close; quitting is best effort.
+SMTP_CLOSE_ERRORS: tuple[type[Exception], ...] = (aiosmtplib.SMTPException, OSError)
+
+
+class SMTPClient(Protocol):
+    """The part of ``aiosmtplib.SMTP`` that AsyncMailer uses; tests pass fakes that match it."""
+
+    @property
+    def is_connected(self) -> bool: ...
+
+    async def connect(self) -> object: ...
+
+    async def send_message(
+        self, message: Message, /, *, sender: str, recipients: Sequence[str]
+    ) -> tuple[dict[str, SMTPResponse], str]: ...
+
+    async def quit(self) -> object: ...
 
 
 def list_builtin_templates() -> list[str]:
@@ -157,14 +183,14 @@ class AsyncMailer:
         settings: Settings,
         renderer: TemplateRenderer | None = None,
         dry_run: bool = False,
-        smtp_client: Any | None = None,
+        smtp_client: SMTPClient | None = None,
     ) -> None:
         self.settings = settings
         self.renderer = renderer or TemplateRenderer()
         self.dry_run = dry_run
         self._custom_smtp_client = smtp_client
         self._in_context = False
-        self._pool: asyncio.Queue[Any] | None = None
+        self._pool: asyncio.Queue[SMTPClient] | None = None
 
     async def __aenter__(self) -> "AsyncMailer":
         self._in_context = True
@@ -175,7 +201,7 @@ class AsyncMailer:
         self,
         _exc_type: type[BaseException] | None,
         _exc_val: BaseException | None,
-        _exc_tb: Any,
+        _exc_tb: TracebackType | None,
     ) -> None:
         self._in_context = False
         if self._pool is not None:
@@ -188,9 +214,9 @@ class AsyncMailer:
             self._pool = None
 
     @staticmethod
-    async def _quit_if_connected(client: Any) -> None:
-        if getattr(client, "is_connected", False):
-            with contextlib.suppress(Exception):
+    async def _quit_if_connected(client: SMTPClient) -> None:
+        if client.is_connected:
+            with contextlib.suppress(*SMTP_CLOSE_ERRORS):
                 await client.quit()
 
     @staticmethod
@@ -219,9 +245,9 @@ class AsyncMailer:
     @classmethod
     def _is_permanent_smtp_error(cls, errors: dict[str, Any]) -> bool:
         code = cls._extract_smtp_code(errors)
-        return code is not None and 500 <= code < 600
+        return code is not None and SMTP_PERMANENT_ERROR_MIN <= code < SMTP_PERMANENT_ERROR_MAX
 
-    def _get_smtp_connection(self) -> Any:
+    def _get_smtp_connection(self) -> SMTPClient:
         if self._custom_smtp_client is not None:
             return self._custom_smtp_client
 
@@ -236,26 +262,25 @@ class AsyncMailer:
         )
 
     @staticmethod
-    async def _ensure_connected(client: Any) -> None:
-        if not getattr(client, "is_connected", False):
+    async def _ensure_connected(client: SMTPClient) -> None:
+        if not client.is_connected:
             await client.connect()
 
-    def _get_pooled_or_new_client(self) -> Any:
+    def _get_pooled_or_new_client(self) -> SMTPClient:
         if self._pool is not None:
             with contextlib.suppress(asyncio.QueueEmpty):
                 return self._pool.get_nowait()
         return self._get_smtp_connection()
 
-    async def _release_pooled_client(self, client: Any, keep_client: bool) -> None:
-        if client is None:
-            return
-        if keep_client and self._pool is not None and getattr(client, "is_connected", False):
+    async def _release_pooled_client(self, client: SMTPClient, keep_client: bool) -> None:
+        # A client that lost its connection is never returned to the pool.
+        if keep_client and self._pool is not None and client.is_connected:
             self._pool.put_nowait(client)
         else:
             await self._quit_if_connected(client)
 
     @contextlib.asynccontextmanager
-    async def _acquire_smtp_client(self) -> AsyncIterator[Any]:
+    async def _acquire_smtp_client(self) -> AsyncIterator[SMTPClient]:
         if self._custom_smtp_client is not None:
             client = self._custom_smtp_client
             await self._ensure_connected(client)
@@ -270,10 +295,6 @@ class AsyncMailer:
                 yield client
             except aiosmtplib.SMTPServerDisconnected:
                 keep_client = False
-                raise
-            except Exception:
-                if not getattr(client, "is_connected", False):
-                    keep_client = False
                 raise
             finally:
                 await self._release_pooled_client(client, keep_client)
@@ -312,9 +333,7 @@ class AsyncMailer:
         try:
             async with self._acquire_smtp_client() as client:
                 res = await client.send_message(msg, sender=sender, recipients=recipients)
-                errors: dict[str, Any] = {}
-                if isinstance(res, tuple) and len(res) == 2 and isinstance(res[0], dict):
-                    errors = res[0]
+                errors = self._refused_recipients(res)
 
                 if errors:
                     return True, f"Partial delivery errors: {list(errors.keys())}", errors
@@ -323,8 +342,17 @@ class AsyncMailer:
             return False, f"SMTP error {exc.code}: {exc.message}", {"smtp_code": exc.code}
         except aiosmtplib.SMTPException as exc:
             return self._smtp_exception_result(exc)
-        except Exception as exc:
+        except OSError as exc:  # refused/reset connections and timeouts
             return False, f"Network/Connection error: {exc}", {}
+
+    @staticmethod
+    def _refused_recipients(send_result: object) -> dict[str, Any]:
+        """Per-recipient errors from ``send_message``'s ``(errors, message)`` result."""
+        match send_result:
+            case (dict() as errors, _):
+                return errors
+            case _:
+                return {}
 
     def _resolve_sender(self, sender: str) -> str:
         if sender:
@@ -343,7 +371,7 @@ class AsyncMailer:
         next_pending: list[str] = []
         for recipient in failed_in_attempt:
             code = cls._extract_smtp_code(errors[recipient])
-            if code is not None and 500 <= code < 600:
+            if code is not None and SMTP_PERMANENT_ERROR_MIN <= code < SMTP_PERMANENT_ERROR_MAX:
                 perm_failed.append(recipient)
             else:
                 next_pending.append(recipient)
@@ -437,7 +465,7 @@ class AsyncMailer:
                 body_content,
                 default_sender=self.settings.smtp_user,
             )
-        except Exception as exc:
+        except RENDER_ERRORS as exc:
             duration_ms = (time.monotonic() - start_time) * 1000.0
             logger.error(f"Failed to render template for task {task.id}: {exc}")
             return TaskExecutionResult(

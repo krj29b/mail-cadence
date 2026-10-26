@@ -4,6 +4,7 @@ import secrets
 import sqlite3
 from collections.abc import Generator
 from contextlib import closing
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -18,12 +19,10 @@ from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
 
 from mail_cadence import __version__
-from mail_cadence.cli import run_dispatch_pipeline
 from mail_cadence.database import get_connection, init_db
 from mail_cadence.dispatch_jobs import DispatchBusyError, DispatchJob, DispatchRunner, JobWork
 from mail_cadence.mailer import (
     INTERNAL_TEMPLATES,
-    AsyncMailer,
     TemplateRenderer,
     list_builtin_templates,
 )
@@ -37,9 +36,9 @@ from mail_cadence.models import (
     ReportSettings,
     Schedule,
     Settings,
-    TaskExecutionResult,
     WorkSchedules,
 )
+from mail_cadence.pipeline import DispatchOptions, dispatch_single_task, run_dispatch
 from mail_cadence.repository import DatabaseRepository
 from mail_cadence.scheduler import TaskScheduler
 
@@ -264,18 +263,33 @@ def _get_all_known_task_ids(repo: DatabaseRepository) -> list[str]:
     return sorted(set(configured) | set(repo.get_logged_task_ids()))
 
 
-def _build_logs_pagination_context(
-    repo: DatabaseRepository,
-    page: int = 1,
-    page_size: int = 25,
-    status_filter: str | None = None,
-    task_id_filter: str | None = None,
-    search_query: str | None = None,
-) -> dict[str, Any]:
-    norm_page_size = _normalize_page_size(page_size)
-    s_filter = _normalize_filter_string(status_filter)
-    t_filter = _normalize_filter_string(task_id_filter)
-    q_filter = _normalize_filter_string(search_query)
+@dataclass(frozen=True, slots=True)
+class LogFilters:
+    """Paging and filter query parameters shared by the log views."""
+
+    page: int = 1
+    page_size: int = 25
+    status_filter: str | None = None
+    task_id: str | None = None
+    q: str | None = None
+
+
+def get_log_filters(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(25, ge=1, le=200),
+    status_filter: str | None = Query(None, alias="status"),
+    task_id: str | None = Query(None),
+    q: str | None = Query(None),
+) -> LogFilters:
+    return LogFilters(page, page_size, status_filter, task_id, q)
+
+
+def _build_logs_pagination_context(repo: DatabaseRepository, filters: LogFilters) -> dict[str, Any]:
+    page = filters.page
+    norm_page_size = _normalize_page_size(filters.page_size)
+    s_filter = _normalize_filter_string(filters.status_filter)
+    t_filter = _normalize_filter_string(filters.task_id)
+    q_filter = _normalize_filter_string(filters.q)
 
     total_logs = repo.count_execution_logs(
         status_filter=s_filter,
@@ -367,21 +381,10 @@ def parse_hour_windows(raw_json: str) -> list[HourWindow]:
 @router.get("/", response_class=HTMLResponse)
 def dashboard(
     request: Request,
-    page: int = Query(1, ge=1),
-    page_size: int = Query(25, ge=1, le=200),
-    status_filter: str | None = Query(None, alias="status"),
-    task_id: str | None = Query(None),
-    q: str | None = Query(None),
+    filters: LogFilters = Depends(get_log_filters),
     repo: DatabaseRepository = Depends(get_repo),
 ) -> Response:
-    logs_ctx = _build_logs_pagination_context(
-        repo=repo,
-        page=page,
-        page_size=page_size,
-        status_filter=status_filter,
-        task_id_filter=task_id,
-        search_query=q,
-    )
+    logs_ctx = _build_logs_pagination_context(repo, filters)
     if (
         request.headers.get("HX-Request") == "true"
         and request.headers.get("HX-Target") == "logs-table-container"
@@ -409,21 +412,10 @@ def dashboard(
 @router.get("/dashboard/logs", response_class=HTMLResponse)
 def get_dashboard_logs(
     request: Request,
-    page: int = Query(1, ge=1),
-    page_size: int = Query(25, ge=1, le=200),
-    status_filter: str | None = Query(None, alias="status"),
-    task_id: str | None = Query(None),
-    q: str | None = Query(None),
+    filters: LogFilters = Depends(get_log_filters),
     repo: DatabaseRepository = Depends(get_repo),
 ) -> Response:
-    logs_ctx = _build_logs_pagination_context(
-        repo=repo,
-        page=page,
-        page_size=page_size,
-        status_filter=status_filter,
-        task_id_filter=task_id,
-        search_query=q,
-    )
+    logs_ctx = _build_logs_pagination_context(repo, filters)
     return templates.TemplateResponse(
         request=request,
         name="_logs_table.html",
@@ -862,37 +854,27 @@ def api_logs(
 @router.post("/dispatch/run", response_class=HTMLResponse)
 async def trigger_dispatch_run(
     request: Request,
-    page: int = Query(1, ge=1),
-    page_size: int = Query(25, ge=1, le=200),
-    status_filter: str | None = Query(None, alias="status"),
-    task_id: str | None = Query(None),
-    q: str | None = Query(None),
+    filters: LogFilters = Depends(get_log_filters),
 ) -> Response:
     form = await request.form()
     dry_run_raw = form.get("dry_run", request.query_params.get("dry_run", "false"))
     dry_run = str(dry_run_raw).lower() in ("true", "1", "on", "yes")
 
     db_path: str = request.app.state.db_path
-    template_dir: str = request.app.state.template_dir
+    options = DispatchOptions(
+        db_path=db_path, template_dir=request.app.state.template_dir, dry_run=dry_run
+    )
+    settings = _get_settings(request)
 
     async def work(job: DispatchJob) -> None:
-        job.exit_code = await run_dispatch_pipeline(
-            db_path=db_path, dry_run=dry_run, template_dir=template_dir
-        )
+        job.exit_code = await run_dispatch(options, settings)
 
     job = _start_job(request, DispatchJob(kind="batch", dry_run=dry_run), work)
 
     with closing(get_connection(db_path)) as conn:
         repo = DatabaseRepository(conn)
         stats = repo.get_dashboard_stats()
-        logs_ctx = _build_logs_pagination_context(
-            repo=repo,
-            page=page,
-            page_size=page_size,
-            status_filter=status_filter,
-            task_id_filter=task_id,
-            search_query=q,
-        )
+        logs_ctx = _build_logs_pagination_context(repo, filters)
 
     return templates.TemplateResponse(
         request=request,
@@ -926,7 +908,7 @@ def run_single_task(
     settings = _get_settings(request)
 
     async def work(job: DispatchJob) -> None:
-        job.result = await _dispatch_single_task(db_path, task_id, settings, template_dir)
+        job.result = await dispatch_single_task(db_path, task_id, settings, template_dir)
 
     job = _start_job(request, DispatchJob(kind="task", task_id=task_id), work)
     return _render_dispatch_status(request, job, status_code=status.HTTP_202_ACCEPTED)
@@ -965,22 +947,6 @@ def _render_dispatch_status(
         status_code=status_code,
         context={"request": request, "job": job},
     )
-
-
-async def _dispatch_single_task(
-    db_path: str, task_id: str, settings: Settings, template_dir: str
-) -> TaskExecutionResult:
-    with closing(get_connection(db_path)) as conn:
-        repo = DatabaseRepository(conn)
-        task = repo.get_mail_task(task_id)
-        if task is None:
-            msg = f"Task '{task_id}' was deleted before it could run"
-            raise LookupError(msg)
-        mailer = AsyncMailer(settings=settings, renderer=TemplateRenderer(template_dir))
-        async with mailer:
-            res = await mailer.dispatch_task(task)
-        repo.log_task_execution(res)
-        return res
 
 
 def create_app(

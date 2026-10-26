@@ -2,30 +2,18 @@ import asyncio
 import logging
 import sqlite3
 import sys
-import uuid
 from contextlib import closing
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Literal
 
 import typer
+from pydantic import ValidationError
 
 from mail_cadence import __version__
 from mail_cadence.database import get_connection, init_db
-from mail_cadence.mailer import AsyncMailer, TemplateRenderer
-from mail_cadence.models import (
-    PRIORITY_ORDER,
-    BatchSummaryReport,
-    MailConfiguration,
-    MailTask,
-    Settings,
-    TaskExecutionResult,
-    TaskExecutionStatus,
-    WorkSchedules,
-)
-from mail_cadence.reporter import ReportGenerator, aggregate_summary_report
-from mail_cadence.repository import DatabaseRepository
-from mail_cadence.scheduler import TaskScheduler, TokenBucketRateLimiter
+from mail_cadence.models import Settings
+from mail_cadence.pipeline import DispatchOptions, run_dispatch
 from mail_cadence.xml_loader import (
     XMLValidationError,
     export_to_xml,
@@ -47,99 +35,14 @@ TEMPLATE_DIR_HELP = (
 _LOOPBACK_HOSTS: frozenset[str] = frozenset({"127.0.0.1", "::1", "localhost"})
 
 
-def _resolve_db_path(db: str) -> str:
-    if db == "mail_cadence.db":
-        return Settings.load().mail_cadence_db
+DEFAULT_DB = "mail_cadence.db"
+
+
+def _resolve_db_path(db: str, settings: Settings | None = None) -> str:
+    """The --db default defers to MAIL_CADENCE_DB from the .env file."""
+    if db == DEFAULT_DB:
+        return (settings or Settings.load()).mail_cadence_db
     return db
-
-
-def _seed_xml_if_provided(
-    conn: sqlite3.Connection,
-    tasks_xml: Path | None,
-    schedule_xml: Path | None,
-    logger: logging.Logger,
-) -> bool:
-    if not (tasks_xml and schedule_xml):
-        return True
-    try:
-        import_from_xml(conn, tasks_xml, schedule_xml, mode="upsert")
-        return True
-    except XMLValidationError as exc:
-        logger.error(f"Configuration error: {exc}")
-        return False
-    except Exception as exc:
-        logger.error(f"Unexpected error loading XML configs: {exc}")
-        return False
-
-
-def _partition_eligible_tasks(
-    mail_config: MailConfiguration,
-    work_schedules: WorkSchedules,
-    execution_states: dict[str, tuple[datetime | None, TaskExecutionStatus | None]],
-    ref_dt: datetime | None,
-    repo: DatabaseRepository,
-    batch_id: str,
-    logger: logging.Logger,
-) -> tuple[
-    list[tuple[MailTask, TokenBucketRateLimiter, asyncio.Semaphore]],
-    list[TaskExecutionResult],
-]:
-    scheduler = TaskScheduler(work_schedules)
-    eligible_tasks: list[tuple[MailTask, TokenBucketRateLimiter, asyncio.Semaphore]] = []
-    results: list[TaskExecutionResult] = []
-    window_controls: dict[
-        tuple[str, str, str], tuple[TokenBucketRateLimiter, asyncio.Semaphore]
-    ] = {}
-
-    for task in mail_config.tasks:
-        last_run, last_status = execution_states.get(task.id, (None, None))
-        window_status = scheduler.window_status(
-            task, reference_dt=ref_dt, last_run=last_run, last_status=last_status
-        )
-        window = window_status.window
-        if window_status.eligible and window is not None:
-            key = (task.schedule_ref, window.start, window.end)
-            if key not in window_controls:
-                window_controls[key] = (
-                    TokenBucketRateLimiter(
-                        window.rate_limit_per_min,
-                        initial_tokens=float(window.max_concurrency),
-                    ),
-                    asyncio.Semaphore(window.max_concurrency),
-                )
-            rate_limiter, semaphore = window_controls[key]
-            eligible_tasks.append((task, rate_limiter, semaphore))
-        else:
-            skip_reason = window_status.skip_reason(task.schedule_ref)
-            logger.info(f"Task {task.id} skipped due to schedule rules ({skip_reason}).")
-            skipped_res = TaskExecutionResult(
-                task_id=task.id,
-                status=TaskExecutionStatus.SKIPPED_SCHEDULE,
-                sent_count=0,
-                duration_ms=0.0,
-                error_details=skip_reason,
-            )
-            results.append(skipped_res)
-            repo.log_task_execution(skipped_res, batch_id=batch_id)
-
-    return eligible_tasks, results
-
-
-async def _send_report_if_needed(
-    report: BatchSummaryReport,
-    mail_config: MailConfiguration,
-    has_report_settings: bool,
-    mailer: AsyncMailer,
-    logger: logging.Logger,
-) -> None:
-    executed = report.successful_tasks + report.partial_tasks + report.failed_tasks
-    if executed == 0:
-        logger.info("No tasks were executed in this batch; status report not sent.")
-        return
-    if not has_report_settings:
-        logger.warning("Report settings are not configured; status report not sent.")
-        return
-    await ReportGenerator().send_report(report, mail_config.report_settings, mailer)
 
 
 def version_callback(value: bool) -> None:
@@ -163,89 +66,24 @@ async def run_dispatch_pipeline(
     dry_run: bool = False,
     verbose: bool = False,
     ref_dt: datetime | None = None,
-    db_path: str = "mail_cadence.db",
+    db_path: str = DEFAULT_DB,
     template_dir: str | Path = ".",
 ) -> int:
+    """CLI-flavoured entry point: sets up logging and loads settings, then runs the pipeline.
+
+    Library code can call ``mail_cadence.pipeline.run_dispatch`` directly.
+    """
     setup_logging(verbose)
-    logger = logging.getLogger("mail_cadence.cli")
-
     settings = Settings.load()
-    resolved_db = _resolve_db_path(db_path)
-
-    start_time = datetime.now(UTC)
-    logger.info(
-        f"Starting MailCadence email dispatch engine (dry_run={dry_run}, db={resolved_db})..."
+    options = DispatchOptions(
+        db_path=_resolve_db_path(db_path, settings),
+        template_dir=template_dir,
+        dry_run=dry_run,
+        ref_dt=ref_dt,
+        tasks_xml=tasks_xml,
+        schedule_xml=schedule_xml,
     )
-
-    with closing(get_connection(resolved_db)) as conn:
-        init_db(conn)
-        repo = DatabaseRepository(conn)
-
-        if not _seed_xml_if_provided(conn, tasks_xml, schedule_xml, logger):
-            return 1
-
-        try:
-            mail_config = repo.get_mail_configuration()
-            work_schedules = repo.get_work_schedules()
-            execution_states = repo.get_task_execution_states()
-        except Exception as exc:
-            logger.error(f"Failed to load configuration from database: {exc}")
-            return 1
-
-        if not mail_config.tasks:
-            logger.warning("No tasks found in database.")
-            return 0
-
-        renderer = TemplateRenderer(template_dir=template_dir)
-        mailer = AsyncMailer(settings=settings, renderer=renderer, dry_run=dry_run)
-        batch_id = str(uuid.uuid4())
-
-        eligible_tasks, results = _partition_eligible_tasks(
-            mail_config, work_schedules, execution_states, ref_dt, repo, batch_id, logger
-        )
-
-        logger.info(
-            f"Scheduled {len(eligible_tasks)} tasks for execution ({len(results)} skipped)."
-        )
-
-        async with mailer:
-
-            async def _execute_single_task(
-                task: MailTask,
-                rate_limiter: TokenBucketRateLimiter,
-                sem: asyncio.Semaphore,
-            ) -> TaskExecutionResult:
-                async with sem:
-                    logger.info(f"Executing task {task.id}...")
-                    res = await mailer.dispatch_task(task, rate_limiter=rate_limiter)
-                    repo.log_task_execution(
-                        res, batch_id=batch_id, dry_run=dry_run, executed_at=ref_dt
-                    )
-                    return res
-
-            if eligible_tasks:
-                eligible_tasks.sort(
-                    key=lambda item: (
-                        PRIORITY_ORDER[item[0].priority],
-                        item[0].id,
-                    )
-                )
-                async with asyncio.TaskGroup() as tg:
-                    tasks_tg = [
-                        tg.create_task(_execute_single_task(t, rl, sem))
-                        for t, rl, sem in eligible_tasks
-                    ]
-                exec_results = [completed_task.result() for completed_task in tasks_tg]
-                results.extend(exec_results)
-
-            end_time = datetime.now(UTC)
-            report = aggregate_summary_report(results, start_time, end_time)
-            await _send_report_if_needed(
-                report, mail_config, repo.has_report_settings(), mailer, logger
-            )
-
-        logger.info("MailCadence execution complete.")
-        return 0 if report.failed_tasks == 0 else 2
+    return await run_dispatch(options, settings)
 
 
 @app.callback(invoke_without_command=True)
@@ -293,7 +131,7 @@ def main(
             envvar="MAIL_CADENCE_DB",
             help="Path to SQLite database file",
         ),
-    ] = "mail_cadence.db",
+    ] = DEFAULT_DB,
     dry_run: Annotated[
         bool,
         typer.Option(
@@ -367,7 +205,7 @@ def cli_import_xml(
             envvar="MAIL_CADENCE_DB",
             help="Path to SQLite database file",
         ),
-    ] = "mail_cadence.db",
+    ] = DEFAULT_DB,
     mode: Annotated[
         str,
         typer.Option(
@@ -394,7 +232,7 @@ def cli_import_xml(
         except XMLValidationError as exc:
             typer.echo(f"XML Validation Error: {exc}", err=True)
             raise typer.Exit(code=1) from exc
-        except Exception as exc:
+        except (sqlite3.Error, ValidationError) as exc:
             typer.echo(f"Error importing XML: {exc}", err=True)
             raise typer.Exit(code=1) from exc
 
@@ -425,7 +263,7 @@ def cli_export_xml(
             envvar="MAIL_CADENCE_DB",
             help="Path to SQLite database file",
         ),
-    ] = "mail_cadence.db",
+    ] = DEFAULT_DB,
 ) -> None:
     """Export current SQLite database configuration to XML files."""
     resolved_db = _resolve_db_path(db)
@@ -437,7 +275,7 @@ def cli_export_xml(
             typer.echo(
                 f"Successfully exported database {resolved_db} to {tasks_xml} and {schedule_xml}."
             )
-        except Exception as exc:
+        except (sqlite3.Error, OSError, ValidationError) as exc:
             typer.echo(f"Error exporting XML: {exc}", err=True)
             raise typer.Exit(code=1) from exc
 
@@ -468,7 +306,7 @@ def cli_serve(
             envvar="MAIL_CADENCE_DB",
             help="Path to SQLite database file",
         ),
-    ] = "mail_cadence.db",
+    ] = DEFAULT_DB,
     template_dir: Annotated[
         str,
         typer.Option(
@@ -498,6 +336,7 @@ def cli_serve(
         )
         raise typer.Exit(code=1)
 
+    setup_logging()
     resolved_db = _resolve_db_path(db)
     with closing(get_connection(resolved_db)) as conn:
         init_db(conn)

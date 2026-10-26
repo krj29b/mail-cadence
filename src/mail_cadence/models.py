@@ -6,7 +6,7 @@ from enum import StrEnum
 from functools import cached_property, lru_cache
 from pathlib import Path
 from typing import Any, Self
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -159,10 +159,8 @@ def parse_time_str(time_str: str) -> time:
     if len(parts) not in (2, 3):
         raise ValueError(f"Invalid time format '{time_str}'. Expected 'HH:MM' or 'HH:MM:SS'.")
     try:
-        hour = int(parts[0])
-        minute = int(parts[1])
-        second = int(parts[2]) if len(parts) == 3 else 0
-        return time(hour, minute, second)
+        hour, minute, *seconds = (int(part) for part in parts)
+        return time(hour, minute, seconds[0] if seconds else 0)
     except (ValueError, TypeError) as exc:
         raise ValueError(f"Invalid time string '{time_str}': {exc}") from exc
 
@@ -239,7 +237,7 @@ class WorkSchedules(BaseXmlModel, tag="WorkSchedules"):
     def validate_timezone(self) -> Self:
         try:
             ZoneInfo(self.timezone)
-        except Exception as exc:
+        except (ZoneInfoNotFoundError, ValueError) as exc:
             raise ValueError(f"Invalid timezone '{self.timezone}': {exc}") from exc
         return self
 

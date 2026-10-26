@@ -202,9 +202,9 @@ import asyncio
 from contextlib import closing
 from datetime import date
 
-from mail_cadence.cli import run_dispatch_pipeline
 from mail_cadence.database import get_connection, init_db
-from mail_cadence.models import BodyTemplate, ContextVar, MailTask, Recipients
+from mail_cadence.models import BodyTemplate, ContextVar, MailTask, Recipients, Settings
+from mail_cadence.pipeline import DispatchOptions, run_dispatch
 from mail_cadence.repository import DatabaseRepository
 
 DB_PATH = "mail_cadence.db"
@@ -248,7 +248,8 @@ async def main() -> None:
     )
 
     # 2. Run the scheduler & SMTP dispatch pipeline (respects active HourWindows)
-    exit_code = await run_dispatch_pipeline(db_path=DB_PATH, dry_run=False)
+    #    (exit code: 0 = ok, 1 = configuration error, 2 = a task failed)
+    exit_code = await run_dispatch(DispatchOptions(db_path=DB_PATH), Settings.load())
     print(f"Dispatch finished with exit code: {exit_code}")
 
 

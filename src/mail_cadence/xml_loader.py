@@ -3,6 +3,8 @@ from pathlib import Path
 from typing import Literal, cast
 
 import defusedxml.ElementTree as ET  # type: ignore[import-untyped]
+from defusedxml import DefusedXmlException
+from pydantic_xml.errors import BaseError as PydanticXmlError
 
 from mail_cadence.models import MailConfiguration, WorkSchedules
 from mail_cadence.repository import DatabaseRepository
@@ -24,7 +26,7 @@ def _parse_xml_safely(file_path: str | Path) -> bytes:
         # Convert root back to bytes for pydantic-xml parsing
         raw_bytes = ET.tostring(root, encoding="utf-8")
         return cast(bytes, raw_bytes)
-    except Exception as exc:
+    except (ET.ParseError, DefusedXmlException, OSError) as exc:
         raise XMLValidationError(f"XML security/syntax error in {path}: {exc}") from exc
 
 
@@ -32,7 +34,7 @@ def load_mail_configuration(file_path: str | Path) -> MailConfiguration:
     xml_bytes = _parse_xml_safely(file_path)
     try:
         return MailConfiguration.from_xml(xml_bytes)
-    except Exception as exc:
+    except (ValueError, PydanticXmlError) as exc:  # ValueError covers ValidationError
         msg = f"Invalid MailConfiguration XML schema in {file_path}: {exc}"
         raise XMLValidationError(msg) from exc
 
@@ -41,7 +43,7 @@ def load_work_schedules(file_path: str | Path) -> WorkSchedules:
     xml_bytes = _parse_xml_safely(file_path)
     try:
         return WorkSchedules.from_xml(xml_bytes)
-    except Exception as exc:
+    except (ValueError, PydanticXmlError) as exc:  # ValueError covers ValidationError
         msg = f"Invalid WorkSchedules XML schema in {file_path}: {exc}"
         raise XMLValidationError(msg) from exc
 

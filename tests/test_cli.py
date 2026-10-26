@@ -112,7 +112,7 @@ async def test_shared_primitives_per_schedule_window(tmp_path: Path) -> None:
         return sem
 
     with (
-        patch("mail_cadence.cli.AsyncMailer.dispatch_task", side_effect=fake_dispatch),
+        patch("mail_cadence.pipeline.AsyncMailer.dispatch_task", side_effect=fake_dispatch),
         patch("asyncio.Semaphore", side_effect=tracked_sem),
     ):
         code = await run_dispatch_pipeline(
@@ -244,7 +244,7 @@ async def test_task_priority_scheduling_order(tmp_path: Path) -> None:
         )
 
     db_path = str(tmp_path / "test.db")
-    with patch("mail_cadence.cli.AsyncMailer.dispatch_task", side_effect=fake_dispatch):
+    with patch("mail_cadence.pipeline.AsyncMailer.dispatch_task", side_effect=fake_dispatch):
         code = await run_dispatch_pipeline(tasks_xml, schedules_xml, dry_run=True, db_path=db_path)
         assert code == 0
         assert executed_order == ["task_z", "task_a"]

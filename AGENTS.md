@@ -23,7 +23,11 @@ Before declaring code readiness, run all of the following tools. None of them ma
   - When reading collections (e.g., `get_mail_tasks`, `get_work_schedules`), fetch related records via a bulk `SELECT` query and group them in memory using `collections.defaultdict`. Do not execute `SELECT` queries inside `for` loops.
   - When writing collections (recipients, context variables, hour windows), always use `self.conn.executemany(...)` instead of `self.conn.execute(...)` in a loop.
 
-## 3. SMTP Engine and Concurrency (`mailer.py`, `scheduler.py`, `cli.py`)
+## 3. SMTP Engine and Concurrency (`mailer.py`, `scheduler.py`, `pipeline.py`)
+* **Layering:** Dispatch orchestration lives only in `pipeline.py` (`run_dispatch`, `dispatch_single_task`). `cli.py` and `web.py` are thin adapters over it; `web.py` must not import `cli.py`. Keep `cli.run_dispatch_pipeline` signature-compatible (external callers and acceptance tests use it).
+* **Exceptions:** Catch specific exceptions (`sqlite3.Error`, `ValidationError`, `XMLValidationError`, `OSError`, `aiosmtplib.SMTPException`, `jinja2.TemplateError`, ...). A bare `except Exception` is allowed only at a thread/job boundary (`DispatchRunner._run`) where any crash must be recorded.
+* **SMTP client typing:** `AsyncMailer` works against the `mailer.SMTPClient` protocol, never `Any`; fakes in tests must match it.
+* **Lint exemptions:** Do not add `per-file-ignores` for complexity rules (`C901`, `PLR0912`, `PLR0915`); split the function instead. The only source exemptions are `B008` in `web.py` (FastAPI `Depends`/`Query`) and the argument-count rules in `cli.py` (Typer commands).
 * **DRY Principle in `AsyncMailer`:** Management of the SMTP connection lifecycle (`_custom_smtp_client`, connection pool `self._pool`, single-use connection) must be implemented in a single place (e.g., via `@contextlib.asynccontextmanager`), without duplicating `try...except` blocks and `send_message` calls.
 * **SMTP Error Classification and Retry:**
   - Error codes in the range `500 <= code < 600` are permanent errors and **are not subject** to retries.
