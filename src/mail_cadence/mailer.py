@@ -6,7 +6,6 @@ import re
 import time
 from collections.abc import AsyncIterator, Sequence
 from email.message import EmailMessage, Message
-from email.mime.multipart import MIMEMultipart
 from email.utils import formatdate, make_msgid, parseaddr
 from pathlib import Path
 from types import TracebackType
@@ -139,34 +138,43 @@ def _extract_sender_domain(sender: str | None) -> str:
     return "localhost"
 
 
+def new_email_message(
+    subject: str, sender: str, to: Sequence[str], cc: Sequence[str] = ()
+) -> EmailMessage:
+    """Message with the standard headers: Subject, From, To, Cc, Date and Message-ID."""
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = sender
+    msg["To"] = ", ".join(to)
+    if cc:
+        msg["Cc"] = ", ".join(cc)
+    msg["Date"] = formatdate(localtime=True)
+    msg["Message-ID"] = make_msgid(domain=_extract_sender_domain(sender))
+    return msg
+
+
+def set_html_body(msg: EmailMessage, html_body: str, plain_body: str | None = None) -> None:
+    """Set a multipart/alternative body; the plain part is derived from HTML if omitted."""
+    plain = plain_body if plain_body is not None else _html_to_plain_text(html_body)
+    msg.set_content(plain, subtype="plain", charset="utf-8")
+    msg.add_alternative(html_body, subtype="html", charset="utf-8")
+
+
 def build_email_message(
     task: MailTask,
     body_content: str,
     default_sender: str | None = None,
 ) -> EmailMessage:
-    msg = EmailMessage()
-    msg["Subject"] = task.subject
-    sender_addr = task.sender or default_sender or ""
-    msg["From"] = sender_addr
-    msg["To"] = ", ".join(task.recipients.to)
-    if task.recipients.cc:
-        msg["Cc"] = ", ".join(task.recipients.cc)
-
-    if "Date" not in msg:
-        msg["Date"] = formatdate(localtime=True)
-
-    if "Message-ID" not in msg:
-        sender_domain = _extract_sender_domain(sender_addr)
-        msg["Message-ID"] = make_msgid(domain=sender_domain)
-
-    body_format = task.body_template.format.lower()
-    if body_format == "html":
-        plain_text_fallback = _html_to_plain_text(body_content)
-        msg.set_content(plain_text_fallback, subtype="plain", charset="utf-8")
-        msg.add_alternative(body_content, subtype="html", charset="utf-8")
+    msg = new_email_message(
+        subject=task.subject,
+        sender=task.sender or default_sender or "",
+        to=task.recipients.to,
+        cc=task.recipients.cc,
+    )
+    if task.body_template.format.lower() == "html":
+        set_html_body(msg, body_content)
     else:
         msg.set_content(body_content, subtype="plain", charset="utf-8")
-
     return msg
 
 
@@ -320,7 +328,7 @@ class AsyncMailer:
 
     async def send_single_message(
         self,
-        msg: EmailMessage | MIMEMultipart,
+        msg: EmailMessage,
         sender: str,
         recipients: list[str],
     ) -> tuple[bool, str | None, dict[str, Any]]:
@@ -397,7 +405,7 @@ class AsyncMailer:
     async def _execute_delivery_attempts(
         self,
         task: MailTask,
-        msg: EmailMessage | MIMEMultipart,
+        msg: EmailMessage,
         sender_addr: str,
         all_recipients: list[str],
         rate_limiter: TokenBucketRateLimiter | None,

@@ -449,31 +449,8 @@ def list_tasks(
     edit: str | None = Query(None),
     repo: DatabaseRepository = Depends(get_repo),
 ) -> Response:
-    tasks = repo.get_mail_tasks()
-    work_schedules = repo.get_work_schedules()
-    schedules = work_schedules.schedules
-    default_sender = _get_settings(request).smtp_user or ""
-    template_dir = getattr(request.app.state, "template_dir", ".")
-    available_templates = _discover_available_templates(template_dir)
-    task_statuses = _get_tasks_window_status(repo, tasks, work_schedules)
-
-    edit_task: MailTask | None = None
-    if edit:
-        edit_task = repo.get_mail_task(edit)
-
-    return templates.TemplateResponse(
-        request=request,
-        name="tasks.html",
-        context={
-            "active_page": "tasks",
-            "tasks": tasks,
-            "schedules": schedules,
-            "default_sender": default_sender,
-            "available_templates": available_templates,
-            "task_statuses": task_statuses,
-            "edit_task": edit_task,
-        },
-    )
+    edit_task = repo.get_mail_task(edit) if edit else None
+    return _render_tasks_page(request, repo, edit_task=edit_task)
 
 
 def _parse_priority(raw: str) -> EmailPriority:
@@ -561,7 +538,12 @@ def reset_task_window(
     )
 
 
-def _render_tasks_page(request: Request, repo: DatabaseRepository, message: str) -> Response:
+def _render_tasks_page(
+    request: Request,
+    repo: DatabaseRepository,
+    message: str | None = None,
+    edit_task: MailTask | None = None,
+) -> Response:
     tasks = repo.get_mail_tasks()
     work_schedules = repo.get_work_schedules()
     template_dir = getattr(request.app.state, "template_dir", ".")
@@ -575,6 +557,7 @@ def _render_tasks_page(request: Request, repo: DatabaseRepository, message: str)
             "default_sender": _get_settings(request).smtp_user or "",
             "available_templates": _discover_available_templates(template_dir),
             "task_statuses": _get_tasks_window_status(repo, tasks, work_schedules),
+            "edit_task": edit_task,
             "message": message,
         },
     )
@@ -647,14 +630,19 @@ def list_schedules(
     edit: str | None = Query(None),
     repo: DatabaseRepository = Depends(get_repo),
 ) -> Response:
+    return _render_schedules_page(request, repo, edit_id=edit)
+
+
+def _render_schedules_page(
+    request: Request,
+    repo: DatabaseRepository,
+    message: str | None = None,
+    edit_id: str | None = None,
+) -> Response:
     work_schedules = repo.get_work_schedules()
-    tz_info = _get_tz_info(work_schedules.timezone)
-    schedule_statuses = _get_schedule_statuses(work_schedules)
-
     edit_schedule: Schedule | None = None
-    if edit:
-        edit_schedule = next((s for s in work_schedules.schedules if s.id == edit), None)
-
+    if edit_id:
+        edit_schedule = next((s for s in work_schedules.schedules if s.id == edit_id), None)
     return templates.TemplateResponse(
         request=request,
         name="schedules.html",
@@ -662,9 +650,10 @@ def list_schedules(
             "active_page": "schedules",
             "work_schedules": work_schedules,
             "common_timezones": COMMON_TIMEZONES,
-            "tz_info": tz_info,
-            "schedule_statuses": schedule_statuses,
+            "tz_info": _get_tz_info(work_schedules.timezone),
+            "schedule_statuses": _get_schedule_statuses(work_schedules),
             "edit_schedule": edit_schedule,
+            "message": message,
         },
     )
 
@@ -694,22 +683,7 @@ async def save_schedule(
             detail=f"Validation Error: {exc}",
         ) from exc
 
-    work_schedules = repo.get_work_schedules()
-    tz_info = _get_tz_info(work_schedules.timezone)
-    schedule_statuses = _get_schedule_statuses(work_schedules)
-
-    return templates.TemplateResponse(
-        request=request,
-        name="schedules.html",
-        context={
-            "active_page": "schedules",
-            "work_schedules": work_schedules,
-            "common_timezones": COMMON_TIMEZONES,
-            "tz_info": tz_info,
-            "schedule_statuses": schedule_statuses,
-            "message": f"Schedule '{schedule_id}' saved successfully.",
-        },
-    )
+    return _render_schedules_page(request, repo, f"Schedule '{schedule_id}' saved successfully.")
 
 
 @router.post("/schedules/timezone", response_class=HTMLResponse)
@@ -730,22 +704,7 @@ async def update_timezone(
             detail=f"Validation Error: {exc}",
         ) from exc
 
-    work_schedules = repo.get_work_schedules()
-    tz_info = _get_tz_info(work_schedules.timezone)
-    schedule_statuses = _get_schedule_statuses(work_schedules)
-
-    return templates.TemplateResponse(
-        request=request,
-        name="schedules.html",
-        context={
-            "active_page": "schedules",
-            "work_schedules": work_schedules,
-            "common_timezones": COMMON_TIMEZONES,
-            "tz_info": tz_info,
-            "schedule_statuses": schedule_statuses,
-            "message": f"Timezone updated to '{tz_val}'.",
-        },
-    )
+    return _render_schedules_page(request, repo, f"Timezone updated to '{tz_val}'.")
 
 
 @router.delete("/schedules/{schedule_id}")
@@ -773,15 +732,20 @@ def view_settings(
     request: Request,
     repo: DatabaseRepository = Depends(get_repo),
 ) -> Response:
-    report_settings = repo.get_report_settings()
-    smtp_settings = _get_settings(request)
+    return _render_settings_page(request, repo)
+
+
+def _render_settings_page(
+    request: Request, repo: DatabaseRepository, message: str | None = None
+) -> Response:
     return templates.TemplateResponse(
         request=request,
         name="settings.html",
         context={
             "active_page": "settings",
-            "settings": report_settings,
-            "smtp_settings": smtp_settings,
+            "settings": repo.get_report_settings(),
+            "smtp_settings": _get_settings(request),
+            "message": message,
         },
     )
 
@@ -812,18 +776,7 @@ async def save_settings(
             detail=f"Validation Error: {exc}",
         ) from exc
 
-    report_settings = repo.get_report_settings()
-    smtp_settings = _get_settings(request)
-    return templates.TemplateResponse(
-        request=request,
-        name="settings.html",
-        context={
-            "active_page": "settings",
-            "settings": report_settings,
-            "smtp_settings": smtp_settings,
-            "message": "Report settings updated successfully.",
-        },
-    )
+    return _render_settings_page(request, repo, "Report settings updated successfully.")
 
 
 @router.get("/api/stats", response_class=JSONResponse)

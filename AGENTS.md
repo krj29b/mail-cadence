@@ -13,7 +13,7 @@ Before declaring code readiness, run all of the following tools. None of them ma
 
 ## 2. SQLite Database Layer (`database.py`, `repository.py`, `xml_loader.py`)
 * **Ban on nested `with self.conn:` blocks:** In the `sqlite3` library, exiting a `with conn:` block immediately performs a `COMMIT` across the entire connection.
-  - Public methods in `DatabaseRepository` (e.g., `save_report_settings`, `save_work_schedules`, `save_mail_configuration`) open a `with self.conn:` block and delegate SQL queries to private methods (`_save_report_settings`, `_save_work_schedules`, `_save_mail_configuration`, `_save_task`) which **do not use** `with self.conn:`.
+  - Public methods in `DatabaseRepository` (e.g., `save_report_settings`, `save_work_schedules`, `save_mail_configuration`) open a `with self.conn:` block and delegate SQL queries to private methods (`_save_report_settings`, `_save_work_schedules`, `_save_schedule`, `_save_mail_configuration`, `_save_task`) which **do not use** `with self.conn:`. Reuse these helpers (and `_load_tasks` / `_row_to_task`, `_log_filter_clause`) instead of copying SQL between public methods.
   - Multi-step operations that must be atomic live in `DatabaseRepository` as public methods that open a single `with self.conn:` block and call the internal `_save_*` methods (e.g., `import_configuration`, used by `import_from_xml`), guaranteeing a full `ROLLBACK` on error.
   - Other modules use only the public API of `DatabaseRepository`: no calls to its private `_*` methods and no direct `repo.conn` queries.
 * **Web dispatch:** Never run a dispatch inside an HTTP request. Start it through `DispatchRunner` (`dispatch_jobs.py`), which runs it in a worker thread and guarantees a single job at a time; jobs open their own SQLite connection.
@@ -28,6 +28,7 @@ Before declaring code readiness, run all of the following tools. None of them ma
 * **Exceptions:** Catch specific exceptions (`sqlite3.Error`, `ValidationError`, `XMLValidationError`, `OSError`, `aiosmtplib.SMTPException`, `jinja2.TemplateError`, ...). A bare `except Exception` is allowed only at a thread/job boundary (`DispatchRunner._run`) where any crash must be recorded.
 * **SMTP client typing:** `AsyncMailer` works against the `mailer.SMTPClient` protocol, never `Any`; fakes in tests must match it.
 * **Lint exemptions:** Do not add `per-file-ignores` for complexity rules (`C901`, `PLR0912`, `PLR0915`); split the function instead. The only source exemptions are `B008` in `web.py` (FastAPI `Depends`/`Query`) and the argument-count rules in `cli.py` (Typer commands).
+* **Email construction:** Every outgoing message (tasks and the status report) is an `email.message.EmailMessage` built with `mailer.new_email_message` (standard headers) and `set_html_body`; do not use `email.mime.*` classes.
 * **DRY Principle in `AsyncMailer`:** Management of the SMTP connection lifecycle (`_custom_smtp_client`, connection pool `self._pool`, single-use connection) must be implemented in a single place (e.g., via `@contextlib.asynccontextmanager`), without duplicating `try...except` blocks and `send_message` calls.
 * **SMTP Error Classification and Retry:**
   - Error codes in the range `500 <= code < 600` are permanent errors and **are not subject** to retries.

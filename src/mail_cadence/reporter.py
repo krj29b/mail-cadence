@@ -1,9 +1,6 @@
 from __future__ import annotations
 
 import logging
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from email.utils import formatdate, make_msgid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -12,7 +9,12 @@ if TYPE_CHECKING:
 
 from jinja2 import Environment, FileSystemLoader, TemplateError, select_autoescape
 
-from mail_cadence.mailer import AUTOESCAPE_EXTENSIONS, AsyncMailer
+from mail_cadence.mailer import (
+    AUTOESCAPE_EXTENSIONS,
+    AsyncMailer,
+    new_email_message,
+    set_html_body,
+)
 from mail_cadence.models import (
     BatchSummaryReport,
     ReportSettings,
@@ -111,15 +113,12 @@ class ReportGenerator:
             report_settings.sender or mailer.settings.smtp_user or "mail-cadence-daemon@localhost"
         )
 
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = f"{report_settings.subject_prefix} Task Execution Summary"
-        msg["From"] = sender_addr
-        msg["To"] = report_settings.recipient
-        msg["Date"] = formatdate(localtime=True)
-        msg["Message-ID"] = make_msgid()
-
-        msg.attach(MIMEText(txt_body, "plain", "utf-8"))
-        msg.attach(MIMEText(html_body, "html", "utf-8"))
+        msg = new_email_message(
+            subject=f"{report_settings.subject_prefix} Task Execution Summary",
+            sender=sender_addr,
+            to=[report_settings.recipient],
+        )
+        set_html_body(msg, html_body, plain_body=txt_body)
 
         success, err, _ = await mailer.send_single_message(
             msg=msg,

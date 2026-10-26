@@ -92,40 +92,41 @@ class DatabaseRepository:
         )
 
         for sched in work_schedules.schedules:
-            self.conn.execute(
-                """
-                INSERT INTO schedules (id, description)
-                VALUES (?, ?)
-                ON CONFLICT(id) DO UPDATE SET description = excluded.description
-                """,
-                (sched.id, sched.description),
+            self._save_schedule(sched)
+
+    def _save_schedule(self, schedule: Schedule) -> None:
+        """Upsert one schedule and replace its hour windows (no transaction of its own)."""
+        self.conn.execute(
+            """
+            INSERT INTO schedules (id, description)
+            VALUES (?, ?)
+            ON CONFLICT(id) DO UPDATE SET description = excluded.description
+            """,
+            (schedule.id, schedule.description),
+        )
+        self.conn.execute("DELETE FROM hour_windows WHERE schedule_id = ?", (schedule.id,))
+        hw_data = [
+            (
+                schedule.id,
+                hw.start,
+                hw.end,
+                hw.days_of_week,
+                hw.max_concurrency,
+                hw.rate_limit_per_min,
+                seq,
             )
-
-            if mode == "upsert":
-                self.conn.execute("DELETE FROM hour_windows WHERE schedule_id = ?", (sched.id,))
-
-            hw_data = [
-                (
-                    sched.id,
-                    hw.start,
-                    hw.end,
-                    hw.days_of_week,
-                    hw.max_concurrency,
-                    hw.rate_limit_per_min,
-                    seq,
-                )
-                for seq, hw in enumerate(sched.allowed_hours)
-            ]
-            if hw_data:
-                self.conn.executemany(
-                    """
-                    INSERT INTO hour_windows
-                    (schedule_id, start_time, end_time, days_of_week, max_concurrency,
-                     rate_limit_per_min, seq)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    hw_data,
-                )
+            for seq, hw in enumerate(schedule.allowed_hours)
+        ]
+        if hw_data:
+            self.conn.executemany(
+                """
+                INSERT INTO hour_windows
+                (schedule_id, start_time, end_time, days_of_week, max_concurrency,
+                 rate_limit_per_min, seq)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                hw_data,
+            )
 
     # --- ReportSettings Operations ---
 
@@ -183,15 +184,21 @@ class DatabaseRepository:
     # --- MailConfiguration & MailTask Operations ---
 
     def get_mail_tasks(self) -> list[MailTask]:
+        return self._load_tasks()
+
+    def _load_tasks(self, task_id: str | None = None) -> list[MailTask]:
+        """Load all tasks, or only ``task_id``, with three bulk queries (no N+1)."""
+        params = (task_id, task_id)
         task_rows = self.conn.execute(
             """
             SELECT id, max_retries, priority, schedule_ref, sender, subject,
-                    body_format, body_template_path
+                   body_format, body_template_path
             FROM tasks
+            WHERE (? IS NULL OR id = ?)
             ORDER BY id
-            """
+            """,
+            params,
         ).fetchall()
-
         if not task_rows:
             return []
 
@@ -199,10 +206,11 @@ class DatabaseRepository:
             """
             SELECT task_id, recipient_type, email
             FROM task_recipients
+            WHERE (? IS NULL OR task_id = ?)
             ORDER BY task_id, seq, id
-            """
+            """,
+            params,
         ).fetchall()
-
         recipients_by_task: dict[str, dict[str, list[str]]] = defaultdict(
             lambda: {"to": [], "cc": [], "bcc": []}
         )
@@ -215,39 +223,37 @@ class DatabaseRepository:
             """
             SELECT task_id, var_name, var_value
             FROM task_context_variables
+            WHERE (? IS NULL OR task_id = ?)
             ORDER BY task_id, seq, id
-            """
+            """,
+            params,
         ).fetchall()
-
         vars_by_task: dict[str, list[ContextVar]] = defaultdict(list)
         for v in var_rows:
             vars_by_task[v["task_id"]].append(ContextVar(name=v["var_name"], value=v["var_value"]))
 
-        tasks: list[MailTask] = []
-        for r in task_rows:
-            task_id = r["id"]
-            rec_data = recipients_by_task[task_id]
-            tasks.append(
-                MailTask(
-                    id=task_id,
-                    max_retries=r["max_retries"],
-                    priority=r["priority"],
-                    schedule_ref=r["schedule_ref"],
-                    sender=r["sender"],
-                    recipients=Recipients(
-                        to=rec_data["to"],
-                        cc=rec_data["cc"],
-                        bcc=rec_data["bcc"],
-                    ),
-                    subject=r["subject"],
-                    body_template=BodyTemplate(
-                        format=r["body_format"], template_path=r["body_template_path"]
-                    ),
-                    context_variables=vars_by_task[task_id],
-                )
-            )
+        return [
+            self._row_to_task(r, recipients_by_task[r["id"]], vars_by_task[r["id"]])
+            for r in task_rows
+        ]
 
-        return tasks
+    @staticmethod
+    def _row_to_task(
+        row: sqlite3.Row, recipients: dict[str, list[str]], context_vars: list[ContextVar]
+    ) -> MailTask:
+        return MailTask(
+            id=row["id"],
+            max_retries=row["max_retries"],
+            priority=row["priority"],
+            schedule_ref=row["schedule_ref"],
+            sender=row["sender"],
+            recipients=Recipients(to=recipients["to"], cc=recipients["cc"], bcc=recipients["bcc"]),
+            subject=row["subject"],
+            body_template=BodyTemplate(
+                format=row["body_format"], template_path=row["body_template_path"]
+            ),
+            context_variables=context_vars,
+        )
 
     def get_mail_configuration(self) -> MailConfiguration:
         report_settings = self.get_report_settings()
@@ -485,64 +491,8 @@ class DatabaseRepository:
     # --- Granular Task & Schedule Operations & Analytics ---
 
     def get_mail_task(self, task_id: str) -> MailTask | None:
-        r = self.conn.execute(
-            """
-            SELECT id, max_retries, priority, schedule_ref, sender, subject,
-                   body_format, body_template_path
-            FROM tasks
-            WHERE id = ?
-            """,
-            (task_id,),
-        ).fetchone()
-
-        if not r:
-            return None
-
-        rec_rows = self.conn.execute(
-            """
-            SELECT recipient_type, email
-            FROM task_recipients
-            WHERE task_id = ?
-            ORDER BY seq, id
-            """,
-            (task_id,),
-        ).fetchall()
-
-        rec_data: dict[str, list[str]] = {"to": [], "cc": [], "bcc": []}
-        for rec in rec_rows:
-            rtype = rec["recipient_type"]
-            if rtype in rec_data:
-                rec_data[rtype].append(rec["email"])
-
-        var_rows = self.conn.execute(
-            """
-            SELECT var_name, var_value
-            FROM task_context_variables
-            WHERE task_id = ?
-            ORDER BY seq, id
-            """,
-            (task_id,),
-        ).fetchall()
-
-        context_vars = [ContextVar(name=v["var_name"], value=v["var_value"]) for v in var_rows]
-
-        return MailTask(
-            id=r["id"],
-            max_retries=r["max_retries"],
-            priority=r["priority"],
-            schedule_ref=r["schedule_ref"],
-            sender=r["sender"],
-            recipients=Recipients(
-                to=rec_data["to"],
-                cc=rec_data["cc"],
-                bcc=rec_data["bcc"],
-            ),
-            subject=r["subject"],
-            body_template=BodyTemplate(
-                format=r["body_format"], template_path=r["body_template_path"]
-            ),
-            context_variables=context_vars,
-        )
+        tasks = self._load_tasks(task_id)
+        return tasks[0] if tasks else None
 
     def save_single_task(self, task: MailTask, reset_window_state: bool | None = None) -> bool:
         """Upsert a task and return whether its window state was reset.
@@ -585,38 +535,7 @@ class DatabaseRepository:
 
     def save_single_schedule(self, schedule: Schedule) -> None:
         with self.conn:
-            self.conn.execute(
-                """
-                INSERT INTO schedules (id, description)
-                VALUES (?, ?)
-                ON CONFLICT(id) DO UPDATE SET description = excluded.description
-                """,
-                (schedule.id, schedule.description),
-            )
-            self.conn.execute("DELETE FROM hour_windows WHERE schedule_id = ?", (schedule.id,))
-
-            hw_data = [
-                (
-                    schedule.id,
-                    hw.start,
-                    hw.end,
-                    hw.days_of_week,
-                    hw.max_concurrency,
-                    hw.rate_limit_per_min,
-                    seq,
-                )
-                for seq, hw in enumerate(schedule.allowed_hours)
-            ]
-            if hw_data:
-                self.conn.executemany(
-                    """
-                    INSERT INTO hour_windows
-                    (schedule_id, start_time, end_time, days_of_week, max_concurrency,
-                     rate_limit_per_min, seq)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    hw_data,
-                )
+            self._save_schedule(schedule)
 
     def schedule_exists(self, schedule_id: str) -> bool:
         row = self.conn.execute("SELECT 1 FROM schedules WHERE id = ?", (schedule_id,)).fetchone()
@@ -640,24 +559,8 @@ class DatabaseRepository:
             "       duration_ms, error_details, attempt_count, executed_at, dry_run",
             "FROM execution_logs",
         ]
-        conditions: list[str] = []
-        params: list[Any] = []
-
-        if status_filter and status_filter.strip():
-            conditions.append("status = ?")
-            params.append(status_filter.strip())
-        if task_id_filter and task_id_filter.strip():
-            conditions.append("task_id = ?")
-            params.append(task_id_filter.strip())
-        if search_query and search_query.strip():
-            pattern = f"%{search_query.strip()}%"
-            conditions.append(
-                "(task_id LIKE ? OR batch_id LIKE ? OR COALESCE(error_details, '') LIKE ?)"
-            )
-            params.extend([pattern, pattern, pattern])
-
-        if conditions:
-            query.append("WHERE " + " AND ".join(conditions))
+        where, params = self._log_filter_clause(status_filter, task_id_filter, search_query)
+        query.extend(where)
 
         query.append("ORDER BY id DESC LIMIT ? OFFSET ?")
         params.extend([limit, offset])
@@ -672,21 +575,13 @@ class DatabaseRepository:
             logs.append(d)
         return logs
 
-    def get_logged_task_ids(self) -> list[str]:
-        """Task IDs that appear in the execution history (including deleted tasks)."""
-        rows = self.conn.execute("SELECT DISTINCT task_id FROM execution_logs").fetchall()
-        return [r["task_id"] for r in rows]
-
-    def count_execution_logs(
-        self,
-        status_filter: str | None = None,
-        task_id_filter: str | None = None,
-        search_query: str | None = None,
-    ) -> int:
-        query = ["SELECT COUNT(*) FROM execution_logs"]
+    @staticmethod
+    def _log_filter_clause(
+        status_filter: str | None, task_id_filter: str | None, search_query: str | None
+    ) -> tuple[list[str], list[Any]]:
+        """WHERE clause (as query parts) and its parameters for the execution log filters."""
         conditions: list[str] = []
         params: list[Any] = []
-
         if status_filter and status_filter.strip():
             conditions.append("status = ?")
             params.append(status_filter.strip())
@@ -699,9 +594,23 @@ class DatabaseRepository:
                 "(task_id LIKE ? OR batch_id LIKE ? OR COALESCE(error_details, '') LIKE ?)"
             )
             params.extend([pattern, pattern, pattern])
+        where = ["WHERE " + " AND ".join(conditions)] if conditions else []
+        return where, params
 
-        if conditions:
-            query.append("WHERE " + " AND ".join(conditions))
+    def get_logged_task_ids(self) -> list[str]:
+        """Task IDs that appear in the execution history (including deleted tasks)."""
+        rows = self.conn.execute("SELECT DISTINCT task_id FROM execution_logs").fetchall()
+        return [r["task_id"] for r in rows]
+
+    def count_execution_logs(
+        self,
+        status_filter: str | None = None,
+        task_id_filter: str | None = None,
+        search_query: str | None = None,
+    ) -> int:
+        query = ["SELECT COUNT(*) FROM execution_logs"]
+        where, params = self._log_filter_clause(status_filter, task_id_filter, search_query)
+        query.extend(where)
 
         row = self.conn.execute(" ".join(query), params).fetchone()
         return int(row[0]) if row and row[0] is not None else 0
