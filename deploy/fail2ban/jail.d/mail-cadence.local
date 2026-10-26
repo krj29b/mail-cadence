@@ -1,0 +1,10 @@
+# Ban clients at the firewall once the panel has blocked them twice within an hour.
+# Behind nginx this bans the real client IP (X-Forwarded-For), on ports 80/443.
+[mail-cadence]
+enabled  = true
+backend  = systemd
+filter   = mail-cadence
+port     = http,https
+maxretry = 2
+findtime = 1h
+bantime  = 1d

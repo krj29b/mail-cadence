@@ -1,0 +1,53 @@
+# One dispatch run (started by mail-cadence-dispatch.timer). See docs/DEPLOYMENT.md.
+[Unit]
+Description=MailCadence dispatch run
+Documentation=https://github.com/krj29b/mail-cadence/blob/master/docs/DEPLOYMENT.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=mail-cadence
+Group=mail-cadence
+# /var/lib/mail-cadence (database) is created and owned by the service user, mode 0700.
+StateDirectory=mail-cadence
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/mail-cadence
+EnvironmentFile=/etc/mail-cadence/mail-cadence.env
+Environment=MAIL_CADENCE_DB=/var/lib/mail-cadence/mail_cadence.db
+Environment=MAIL_CADENCE_TEMPLATE_DIR=/etc/mail-cadence/templates
+ExecStart=/opt/mail-cadence/venv/bin/mail-cadence
+# Exit code 2 = a task failed: the unit is marked failed on purpose (systemctl --failed,
+# OnFailure= hooks). A hung run is stopped instead of blocking the next timer tick.
+TimeoutStartSec=30min
+
+# --- Sandboxing (check with: systemd-analyze security mail-cadence-dispatch) ---
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

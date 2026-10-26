@@ -168,6 +168,8 @@ mail-cadence export-xml --tasks-xml exported_tasks.xml --schedule-xml exported_s
 
 ### 4. Web Panel (`serve`)
 
+For a production setup (systemd units with sandboxing, a 10-minute dispatch timer, nginx with HTTPS, fail2ban), see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) and the files in [`deploy/`](deploy).
+
 ```bash
 mail-cadence serve --host 127.0.0.1 --port 8000
 ```

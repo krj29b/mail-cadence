@@ -1,0 +1,16 @@
+# Run a dispatch every 10 minutes. Window-level idempotency makes repeated runs safe:
+# each task is sent at most once per active schedule window. See docs/DEPLOYMENT.md.
+[Unit]
+Description=MailCadence dispatch every 10 minutes
+Documentation=https://github.com/krj29b/mail-cadence/blob/master/docs/DEPLOYMENT.md
+
+[Timer]
+OnCalendar=*:0/10
+# Catch up once after downtime instead of silently skipping.
+Persistent=true
+RandomizedDelaySec=30
+# A tick is skipped while the previous run is still active (Type=oneshot).
+Unit=mail-cadence-dispatch.service
+
+[Install]
+WantedBy=timers.target
