@@ -3,6 +3,15 @@ from pathlib import Path
 import pytest
 
 from mail_cadence.database import get_connection, init_db
+from mail_cadence.models import (
+    BodyTemplate,
+    MailConfiguration,
+    MailTask,
+    Recipients,
+    ReportSettings,
+    Schedule,
+    WorkSchedules,
+)
 from mail_cadence.repository import DatabaseRepository
 from mail_cadence.xml_loader import (
     XMLValidationError,
@@ -170,3 +179,38 @@ def test_load_work_schedules_invalid_time_or_timezone(tmp_path: Path) -> None:
 
     with pytest.raises(XMLValidationError):
         load_work_schedules(schedules_invalid_tz)
+
+
+def test_validate_xml_configs_empty_schedules_and_tasks() -> None:
+    # 1. Empty schedules with tasks referencing schedule -> raises XMLValidationError
+    mail_config = MailConfiguration(
+        report_settings=ReportSettings(recipient="admin@example.com"),
+        tasks=[
+            MailTask(
+                id="TASK-001",
+                schedule_ref="SCHED-1",
+                sender="sender@example.com",
+                recipients=Recipients(to=["user@example.com"]),
+                subject="Test",
+                body_template=BodyTemplate(template_path="tpl.j2"),
+            )
+        ],
+    )
+    empty_schedules = WorkSchedules(timezone="UTC", schedules=[])
+
+    with pytest.raises(XMLValidationError, match="references unknown schedule 'SCHED-1'"):
+        validate_xml_configs(mail_config, empty_schedules)
+
+    # 2. Empty schedules and empty tasks -> passes without error
+    empty_mail_config = MailConfiguration(
+        report_settings=ReportSettings(recipient="admin@example.com"),
+        tasks=[],
+    )
+    validate_xml_configs(empty_mail_config, empty_schedules)
+
+    # 3. Non-empty schedules and empty tasks -> passes without error
+    schedules_with_items = WorkSchedules(
+        timezone="UTC",
+        schedules=[Schedule(id="SCHED-1", allowed_hours=[])],
+    )
+    validate_xml_configs(empty_mail_config, schedules_with_items)
