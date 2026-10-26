@@ -1,3 +1,4 @@
+import functools
 import json
 import logging
 import math
@@ -196,9 +197,9 @@ def _is_valid_task_template(path: Path, base_path: Path) -> bool:
     return not any(p.startswith((".", "_")) or p in _IGNORED_TEMPLATE_DIRS for p in rel_parts)
 
 
-def _discover_available_templates(template_dir: str | Path) -> list[str]:
-    """List templates usable by tasks: files in template_dir, then the built-in ones."""
-    base_path = Path(template_dir)
+@functools.lru_cache(maxsize=128)
+def _discover_templates_cached(base_path_str: str) -> tuple[str, ...]:
+    base_path = Path(base_path_str)
     templates_found: list[str] = []
     if base_path.is_dir():
         templates_found = sorted(
@@ -206,6 +207,13 @@ def _discover_available_templates(template_dir: str | Path) -> list[str]:
             for path in base_path.rglob("*")
             if _is_valid_task_template(path, base_path)
         )
+    return tuple(templates_found)
+
+
+def _discover_available_templates(template_dir: str | Path) -> list[str]:
+    """List templates usable by tasks: files in template_dir, then the built-in ones."""
+    base_path_str = str(Path(template_dir).resolve())
+    templates_found = list(_discover_templates_cached(base_path_str))
     return templates_found + list_builtin_templates()
 
 
