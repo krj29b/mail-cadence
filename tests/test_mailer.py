@@ -235,7 +235,7 @@ async def test_async_mailer_dispatch_missing_template(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_async_mailer_dry_run(tmp_path: Path) -> None:
     tpl_file = tmp_path / "test.j2"
-    tpl_file.write_text("Hello {{ name }}!")
+    tpl_file.write_text("Hello there!")
 
     settings = Settings()
     renderer = TemplateRenderer(template_dir=tmp_path)
@@ -261,7 +261,7 @@ async def test_async_mailer_dry_run(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_async_mailer_retry_and_failure(tmp_path: Path) -> None:
     tpl_file = tmp_path / "test.j2"
-    tpl_file.write_text("Hello {{ name }}!")
+    tpl_file.write_text("Hello there!")
 
     settings = Settings()
     renderer = TemplateRenderer(template_dir=tmp_path)
@@ -296,7 +296,7 @@ async def test_dispatch_task_failure_with_rate_limiter_and_network_exception(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     tpl_file = tmp_path / "test.j2"
-    tpl_file.write_text("Hello {{ name }}!")
+    tpl_file.write_text("Hello there!")
 
     settings = Settings()
     renderer = TemplateRenderer(template_dir=tmp_path)
@@ -344,7 +344,7 @@ async def test_dispatch_task_retry_success_with_rate_limiter(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     tpl_file = tmp_path / "test.j2"
-    tpl_file.write_text("Hello {{ name }}!")
+    tpl_file.write_text("Hello there!")
 
     settings = Settings()
     renderer = TemplateRenderer(template_dir=tmp_path)
@@ -390,7 +390,7 @@ async def test_dispatch_task_retry_success_with_rate_limiter(
 @pytest.mark.asyncio
 async def test_async_mailer_partial_delivery(tmp_path: Path) -> None:
     tpl_file = tmp_path / "test.j2"
-    tpl_file.write_text("Hello {{ name }}!")
+    tpl_file.write_text("Hello there!")
 
     settings = Settings()
     renderer = TemplateRenderer(template_dir=tmp_path)
@@ -431,7 +431,7 @@ async def test_partial_delivery_permanent_5xx_no_retry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     tpl_file = tmp_path / "test.j2"
-    tpl_file.write_text("Hello {{ name }}!")
+    tpl_file.write_text("Hello there!")
 
     settings = Settings()
     renderer = TemplateRenderer(template_dir=tmp_path)
@@ -484,7 +484,7 @@ async def test_partial_delivery_permanent_5xx_no_retry(
 @pytest.mark.asyncio
 async def test_permanent_5xx_smtp_error_no_retry(tmp_path: Path) -> None:
     tpl_file = tmp_path / "test.j2"
-    tpl_file.write_text("Hello {{ name }}!")
+    tpl_file.write_text("Hello there!")
 
     settings = Settings()
     renderer = TemplateRenderer(template_dir=tmp_path)
@@ -518,7 +518,7 @@ async def test_transient_4xx_smtp_error_retries_fully(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     tpl_file = tmp_path / "test.j2"
-    tpl_file.write_text("Hello {{ name }}!")
+    tpl_file.write_text("Hello there!")
 
     settings = Settings()
     renderer = TemplateRenderer(template_dir=tmp_path)
@@ -555,7 +555,7 @@ async def test_async_mailer_context_manager_reuse(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     tpl_file = tmp_path / "test.j2"
-    tpl_file.write_text("Hello {{ name }}!")
+    tpl_file.write_text("Hello there!")
 
     settings = Settings()
     renderer = TemplateRenderer(template_dir=tmp_path)
@@ -622,7 +622,7 @@ async def test_async_mailer_context_manager_reconnect_on_disconnect(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     tpl_file = tmp_path / "test.j2"
-    tpl_file.write_text("Hello {{ name }}!")
+    tpl_file.write_text("Hello there!")
 
     settings = Settings()
     renderer = TemplateRenderer(template_dir=tmp_path)

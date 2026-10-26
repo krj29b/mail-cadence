@@ -609,10 +609,7 @@ def preview_task(
     renderer = TemplateRenderer(template_dir=template_dir)
 
     try:
-        rendered = renderer.render(
-            task.body_template.template_path,
-            task.get_context_dict(),
-        )
+        rendered = renderer.render_task_body(task)
     except (ValueError, jinja2.TemplateNotFound, jinja2.TemplateError, FileNotFoundError) as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

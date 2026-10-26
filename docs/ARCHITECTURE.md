@@ -452,6 +452,7 @@ stateDiagram-v2
 - The resolved path must reside within the template directory (`resolved_path.relative_to(base_dir)`). Attempting to reference files outside it raises a `ValueError`.
 
 ### 3. Cross-Site Scripting (XSS) Prevention
+- The task renderer uses `StrictUndefined`: an undefined variable raises `jinja2.UndefinedError`. `TemplateRenderer.render_task_body` also rejects a body without visible text (`EmptyBodyError`). Both end the task with `FAILED` (`Template rendering error: ...`) before any SMTP call, and make the panel preview return `400`.
 - Jinja2 environments (task renderer and status report) use `select_autoescape(enabled_extensions=mailer.AUTOESCAPE_EXTENSIONS, default_for_string=True)`, which enables autoescape for `html`, `htm`, `xml` and the compound `html.j2`, `htm.j2`, `xml.j2` extensions, and for templates rendered from strings.
 - Ensures context variables and SMTP error details rendered into HTML emails are auto-escaped. `*.txt.j2` templates are not escaped.
 

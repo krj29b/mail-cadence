@@ -259,6 +259,32 @@ def test_task_preview_and_path_traversal_blocking(
     )
 
 
+@pytest.mark.parametrize("content", ["<h1>Hello {{ nme }}</h1>", "<p></p>"])
+def test_task_preview_rejects_broken_template(
+    client: TestClient, tmp_path: Path, tmp_db_path: Path, content: str
+) -> None:
+    (tmp_path / "broken.html").write_text(content)
+    conn = get_connection(tmp_db_path)
+    DatabaseRepository(conn).save_single_task(
+        MailTask.model_validate(
+            {
+                "id": "broken_task",
+                "schedule_ref": "sched_default",
+                "sender": "sender@example.com",
+                "recipients": {"to": ["to@example.com"]},
+                "subject": "Hello",
+                "body_template": {"format": "html", "template_path": "broken.html"},
+                "context_variables": [{"name": "name", "value": "Bob"}],
+            }
+        )
+    )
+    conn.close()
+
+    resp = client.get("/tasks/broken_task/preview")
+    assert resp.status_code == 400
+    assert "Template error" in resp.json()["detail"]
+
+
 def test_schedule_crud_and_integrity_constraint(client: TestClient, tmp_db_path: Path) -> None:
     list_resp = client.get("/schedules")
     assert list_resp.status_code == 200

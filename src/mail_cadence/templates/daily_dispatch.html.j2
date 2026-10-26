@@ -1,5 +1,5 @@
-Hello {{ region if region else 'Valued Customer' }},
+Hello {{ region | default('Valued Customer', true) }},
 
-This is an automated operational dispatch email for {{ report_date if report_date else 'today' }}.
+This is an automated operational dispatch email for {{ report_date | default('today', true) }}.
 
 Thank you for using our service.

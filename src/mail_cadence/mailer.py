@@ -18,6 +18,7 @@ from jinja2 import (
     Environment,
     FileSystemLoader,
     PrefixLoader,
+    StrictUndefined,
     TemplateError,
     TemplateNotFound,
     select_autoescape,
@@ -81,6 +82,10 @@ class TemplateRenderer:
     - ``builtin:<name>`` loads a template shipped with the package;
     - any other path is resolved inside ``template_dir`` only (no fallbacks);
     - a missing template raises ``jinja2.TemplateNotFound``.
+
+    Task templates use ``StrictUndefined``: a misspelled or missing variable raises
+    ``jinja2.UndefinedError`` instead of rendering as an empty string. Optional
+    variables need ``{{ name | default('...') }}`` or ``{% if name is defined %}``.
     """
 
     def __init__(self, template_dir: str | Path = ".") -> None:
@@ -90,6 +95,7 @@ class TemplateRenderer:
         )
         self.env = Environment(
             loader=ChoiceLoader([builtin_loader, FileSystemLoader(str(self.template_dir))]),
+            undefined=StrictUndefined,
             autoescape=select_autoescape(
                 enabled_extensions=AUTOESCAPE_EXTENSIONS, default_for_string=True
             ),
@@ -116,6 +122,20 @@ class TemplateRenderer:
     def render(self, template_path: str, context: dict[str, Any]) -> str:
         template = self.env.get_template(self._resolve_loader_name(template_path))
         return template.render(**context)
+
+    def render_task_body(self, task: MailTask) -> str:
+        """Render a task's body; raises EmptyBodyError if it contains no visible text."""
+        body = self.render(task.body_template.template_path, task.get_context_dict())
+        is_html = task.body_template.format.lower() == "html"
+        visible_text = _html_to_plain_text(body) if is_html else body
+        if not visible_text.strip():
+            msg = f"Template '{task.body_template.template_path}' rendered an empty body"
+            raise EmptyBodyError(msg)
+        return body
+
+
+class EmptyBodyError(ValueError):
+    """A task template rendered no visible text; such a message is never sent."""
 
 
 def _html_to_plain_text(html_str: str) -> str:
@@ -466,8 +486,7 @@ class AsyncMailer:
             )
 
         try:
-            context = task.get_context_dict()
-            body_content = self.renderer.render(task.body_template.template_path, context)
+            body_content = self.renderer.render_task_body(task)
             msg = build_email_message(
                 task,
                 body_content,

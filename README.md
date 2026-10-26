@@ -75,6 +75,8 @@ The database schema is versioned (`PRAGMA user_version`). Existing databases are
 - Every task needs at least one recipient (`To`, `Cc` or `Bcc`). Each entry is one address, bare or with a name (`Ann <ann@example.com>`).
 - `schedule_ref` must name an existing schedule.
 - Hour windows include both ends. To cover a whole day use `start="00:00" end="24:00"`; `23:59` leaves the last minute uncovered.
+- Task templates are strict: a variable that is not defined (for example a typo, `{{ nme }}`) fails the task instead of rendering as empty text. Mark optional variables explicitly: `{{ region | default('everyone') }}` or `{% if region is defined %}...{% endif %}`.
+- A task whose template renders no visible text (empty file, or only empty tags) fails with `Template rendering error` and nothing is sent. The panel preview shows the same error. An email made only of images therefore needs some text, for example `alt` text in a paragraph.
 
 ---
 
