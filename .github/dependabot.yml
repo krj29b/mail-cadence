@@ -1,0 +1,21 @@
+version: 2
+updates:
+  # Keep the actions used in .github/workflows up to date (one grouped PR per week).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]
+
+  # Build-time web panel assets (Tailwind, htmx, lucide, fonts) pinned in
+  # frontend/package-lock.json. After merging, run `make assets` and commit web_static/
+  # (the CI "assets" job fails until that is done).
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+    groups:
+      frontend:
+        patterns: ["*"]
