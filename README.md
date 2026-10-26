@@ -161,6 +161,16 @@ mail-cadence export-xml --tasks-xml exported_tasks.xml --schedule-xml exported_s
 
 ---
 
+### 4. Web Panel (`serve`)
+
+```bash
+mail-cadence serve --host 127.0.0.1 --port 8000
+```
+
+- Set `ADMIN_USER` and `ADMIN_PASSWORD`; without them every request gets `503`. `--insecure-no-auth` turns this off, and only works with a loopback `--host`.
+- State-changing requests (`POST`, `PUT`, `DELETE`, ...) from other sites are rejected with `403`. The check compares the browser's `Origin` header with the request's `Host` header.
+- **Behind a reverse proxy** (nginx, Traefik, Caddy, ...), the proxy must pass the original `Host` header through, otherwise every save or dispatch fails with `403 Cross-site request rejected.` For nginx: `proxy_set_header Host $host;` (Caddy and Traefik keep it by default). Serve the panel over HTTPS, because Basic Auth sends the password with every request.
+
 ## Development & Quality Gates
 
 The project maintains strict code quality standards enforced via `Makefile` commands:
@@ -184,6 +194,16 @@ make audit
 # Run all quality gate checks in sequence
 make quality-gate
 ```
+
+### Acceptance Tests for the Review Fixes
+
+The tests in `../tests/test_required_fixes.py` (next to the review document, outside this repo) check the F2–F6 fixes. Run them from the repo root with this repo's virtual environment. They need `src` on `PYTHONPATH` and the repo path in `MAIL_CADENCE_REPO`:
+
+```bash
+MAIL_CADENCE_REPO="$PWD" PYTHONPATH=src .venv/Scripts/python -m pytest -q -p no:cacheprovider     --rootdir .. ../tests
+```
+
+On Linux/macOS use `.venv/bin/python`. In PowerShell set the variables first: `$env:MAIL_CADENCE_REPO = (Get-Location).Path; $env:PYTHONPATH = "src"`.
 
 ## When to Use `mail-cadence` (Practical Use Cases)
 
