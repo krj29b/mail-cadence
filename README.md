@@ -44,7 +44,7 @@ make install
 
 ## Configuration Reference
 
-`mail-cadence` is configured through environment variables (or a `.env` file) for SMTP server options and database location, alongside XML or database settings.
+`mail-cadence` is configured through environment variables (or a `.env` file) for SMTP server options and database location, alongside XML or database settings. The `.env` file is read from the current directory, or from `MAIL_CADENCE_ENV_FILE` — set it explicitly for cron/systemd runs. Real environment variables take precedence over the file.
 
 ### Environment Variables (`Settings`)
 
@@ -60,6 +60,8 @@ Supported environment settings defined in `mail_cadence.models.Settings`:
 | `SMTP_START_TLS` | `false` | Enable STARTTLS command upgrade (`true`/`false`) |
 | `SMTP_TIMEOUT` | `30.0` | Timeout in seconds for SMTP operations |
 | `MAIL_CADENCE_DB` | `mail_cadence.db` | Path to SQLite database file |
+| `MAIL_CADENCE_ENV_FILE` | `./.env` | Path to the `.env` file with these settings. When set, the file must exist. Without it, `.env` is read from the current directory (if present) |
+| `MAIL_CADENCE_TEMPLATE_DIR` | `.` | Directory that task template paths are resolved against (same as `--template-dir`). Built-in templates are referenced as `builtin:<name>`, e.g. `builtin:daily_dispatch.html.j2` |
 | `ADMIN_USER` | *None* | Web panel username. Without it (and `ADMIN_PASSWORD`) the panel refuses access unless started with `serve --insecure-no-auth` on a loopback host |
 | `ADMIN_PASSWORD` | *None* | Web panel password |
 
@@ -85,6 +87,7 @@ mail-cadence [OPTIONS]
 | `--db` | `-b` | `PATH` | `mail_cadence.db` | Path to SQLite database file (overrides `MAIL_CADENCE_DB`) |
 | `--dry-run` | `-d` | `FLAG` | `false` | Execute workflow in simulation mode without sending network SMTP requests. Results are logged, but task window state is not updated |
 | `--verbose` | `-v` | `FLAG` | `false` | Enable verbose debug logging output |
+| `--template-dir` | | `PATH` | `.` | Directory that task template paths are resolved against (overrides `MAIL_CADENCE_TEMPLATE_DIR`). Set it explicitly when running from cron/systemd |
 
 #### Exit Codes
 - **`0`**: Successful execution or no tasks were eligible for processing.
@@ -222,7 +225,9 @@ def update_daily_report_task(metrics: dict[str, str]) -> None:
                 ContextVar(name=key, value=val) for key, val in metrics.items()
             ],
         )
-        repo.save_single_task(task)
+        # Keep "at most once per window": fresh metrics must not re-enable a dispatch
+        # that already happened in the current window.
+        repo.save_single_task(task, reset_window_state=False)
 
 
 async def main() -> None:

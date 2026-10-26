@@ -1,5 +1,3 @@
-import asyncio
-import html
 import json
 import math
 import secrets
@@ -22,6 +20,7 @@ from pydantic import ValidationError
 from mail_cadence import __version__
 from mail_cadence.cli import run_dispatch_pipeline
 from mail_cadence.database import get_connection, init_db
+from mail_cadence.dispatch_jobs import DispatchBusyError, DispatchJob, DispatchRunner, JobWork
 from mail_cadence.mailer import (
     INTERNAL_TEMPLATES,
     AsyncMailer,
@@ -37,11 +36,11 @@ from mail_cadence.models import (
     ReportSettings,
     Schedule,
     Settings,
-    TaskExecutionStatus,
+    TaskExecutionResult,
     WorkSchedules,
 )
 from mail_cadence.repository import DatabaseRepository
-from mail_cadence.scheduler import TaskScheduler, get_active_window
+from mail_cadence.scheduler import TaskScheduler
 
 COMMON_TIMEZONES: tuple[str, ...] = (
     "UTC",
@@ -176,20 +175,6 @@ def _discover_available_templates(template_dir: str | Path) -> list[str]:
     return templates_found + list_builtin_templates()
 
 
-def _is_dispatched_in_window(
-    scheduler: TaskScheduler,
-    window: Any,
-    last_run: Any,
-    last_status: Any,
-    ref_dt: Any,
-) -> bool:
-    if window is None or last_run is None or last_status != TaskExecutionStatus.SUCCESS:
-        return False
-    w_start, w_end = scheduler._get_window_bounds(window, ref_dt)
-    last_run_tz = scheduler._normalize_dt(last_run)
-    return w_start <= last_run_tz <= w_end
-
-
 def _get_tasks_window_status(
     repo: DatabaseRepository,
     tasks: list[MailTask],
@@ -197,32 +182,26 @@ def _get_tasks_window_status(
 ) -> dict[str, dict[str, Any]]:
     scheduler = TaskScheduler(work_schedules)
     states = repo.get_task_execution_states()
-    schedule_map = {s.id: s for s in work_schedules.schedules}
-    ref_dt = scheduler._normalize_dt(None)
+    ref_dt = scheduler.now()
     statuses: dict[str, dict[str, Any]] = {}
 
     for task in tasks:
         last_run, last_status = states.get(task.id, (None, None))
-        schedule = schedule_map.get(task.schedule_ref)
-        window = get_active_window(schedule, ref_dt) if schedule else None
-        eligible, _ = scheduler.is_task_eligible(
+        window_status = scheduler.window_status(
             task, reference_dt=ref_dt, last_run=last_run, last_status=last_status
         )
-
-        dispatched_in_window = _is_dispatched_in_window(
-            scheduler, window, last_run, last_status, ref_dt
-        )
+        has_window = window_status.window is not None
         status_key = (
             "dispatched_in_window"
-            if dispatched_in_window
-            else ("eligible_now" if window is not None else "waiting_window")
+            if window_status.dispatched_in_window
+            else ("eligible_now" if has_window else "waiting_window")
         )
 
         statuses[task.id] = {
             "status_key": status_key,
-            "has_active_window": window is not None,
-            "dispatched_in_window": dispatched_in_window,
-            "eligible_now": eligible,
+            "has_active_window": has_window,
+            "dispatched_in_window": window_status.dispatched_in_window,
+            "eligible_now": window_status.eligible,
             "last_status": last_status.value if last_status else "NEVER_RUN",
             "last_executed_at": last_run.isoformat() if last_run else None,
         }
@@ -257,12 +236,11 @@ def _get_tz_info(tz_name: str) -> dict[str, str]:
 
 def _get_schedule_statuses(work_schedules: WorkSchedules) -> dict[str, bool]:
     scheduler = TaskScheduler(work_schedules)
-    ref_dt = scheduler._normalize_dt(None)
-    statuses: dict[str, bool] = {}
-    for sched in work_schedules.schedules:
-        win = get_active_window(sched, ref_dt)
-        statuses[sched.id] = win is not None
-    return statuses
+    ref_dt = scheduler.now()
+    return {
+        sched.id: scheduler.active_window(sched.id, ref_dt) is not None
+        for sched in work_schedules.schedules
+    }
 
 
 def _normalize_filter_string(val: str | None) -> str | None:
@@ -282,11 +260,7 @@ def _normalize_page_size(page_size: int) -> int:
 
 def _get_all_known_task_ids(repo: DatabaseRepository) -> list[str]:
     configured = [t.id for t in repo.get_mail_tasks()]
-    from_logs = [
-        r["task_id"]
-        for r in repo.conn.execute("SELECT DISTINCT task_id FROM execution_logs").fetchall()
-    ]
-    return sorted(list(set(configured + from_logs)))
+    return sorted(set(configured) | set(repo.get_logged_task_ids()))
 
 
 def _build_logs_pagination_context(
@@ -421,7 +395,13 @@ def dashboard(
     return templates.TemplateResponse(
         request=request,
         name="dashboard.html",
-        context={"request": request, "active_page": "dashboard", "stats": stats, **logs_ctx},
+        context={
+            "request": request,
+            "active_page": "dashboard",
+            "stats": stats,
+            "job": _get_runner(request).current,
+            **logs_ctx,
+        },
     )
 
 
@@ -547,31 +527,52 @@ async def save_task(
         form_data = await request.form()
         form_dict = {k: v for k, v in form_data.items()}
         task = _build_task_from_form_dict(form_dict, default_sender=default_sender)
-        repo.save_single_task(task)
+        was_reset = repo.save_single_task(task)
     except (ValidationError, ValueError, json.JSONDecodeError) as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Validation Error: {exc}",
         ) from exc
 
+    message = f"Task '{task.id}' saved successfully."
+    if not was_reset:
+        message += " No changes detected; dispatch state in the current window was kept."
+    return _render_tasks_page(request, repo, message)
+
+
+@router.post("/tasks/{task_id}/reset-window", response_class=HTMLResponse)
+def reset_task_window(
+    task_id: str,
+    request: Request,
+    repo: DatabaseRepository = Depends(get_repo),
+) -> Response:
+    if not repo.reset_task_window_state(task_id):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Task '{task_id}' not found",
+        )
+    return _render_tasks_page(
+        request,
+        repo,
+        f"Task '{task_id}' may be dispatched again in its current window.",
+    )
+
+
+def _render_tasks_page(request: Request, repo: DatabaseRepository, message: str) -> Response:
     tasks = repo.get_mail_tasks()
     work_schedules = repo.get_work_schedules()
-    schedules = work_schedules.schedules
     template_dir = getattr(request.app.state, "template_dir", ".")
-    available_templates = _discover_available_templates(template_dir)
-    task_statuses = _get_tasks_window_status(repo, tasks, work_schedules)
-
     return templates.TemplateResponse(
         request=request,
         name="tasks.html",
         context={
             "active_page": "tasks",
             "tasks": tasks,
-            "schedules": schedules,
-            "default_sender": default_sender,
-            "available_templates": available_templates,
-            "task_statuses": task_statuses,
-            "message": f"Task '{task.id}' saved successfully.",
+            "schedules": work_schedules.schedules,
+            "default_sender": _get_settings(request).smtp_user or "",
+            "available_templates": _discover_available_templates(template_dir),
+            "task_statuses": _get_tasks_window_status(repo, tasks, work_schedules),
+            "message": message,
         },
     )
 
@@ -856,100 +857,119 @@ async def trigger_dispatch_run(
     task_id: str | None = Query(None),
     q: str | None = Query(None),
 ) -> Response:
-    lock: asyncio.Lock = request.app.state.dispatch_lock
-    if lock.locked():
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="A dispatch batch is already running.",
-        )
-
     form = await request.form()
     dry_run_raw = form.get("dry_run", request.query_params.get("dry_run", "false"))
     dry_run = str(dry_run_raw).lower() in ("true", "1", "on", "yes")
 
-    async with lock:
-        db_path = getattr(request.app.state, "db_path", "mail_cadence.db")
-        template_dir = getattr(request.app.state, "template_dir", ".")
-        await run_dispatch_pipeline(
-            db_path=db_path,
-            dry_run=dry_run,
-            template_dir=template_dir,
+    db_path: str = request.app.state.db_path
+    template_dir: str = request.app.state.template_dir
+
+    async def work(job: DispatchJob) -> None:
+        job.exit_code = await run_dispatch_pipeline(
+            db_path=db_path, dry_run=dry_run, template_dir=template_dir
         )
 
-        with closing(get_connection(db_path)) as conn:
-            repo = DatabaseRepository(conn)
-            stats = repo.get_dashboard_stats()
-            logs_ctx = _build_logs_pagination_context(
-                repo=repo,
-                page=page,
-                page_size=page_size,
-                status_filter=status_filter,
-                task_id_filter=task_id,
-                search_query=q,
-            )
+    job = _start_job(request, DispatchJob(kind="batch", dry_run=dry_run), work)
 
-        return templates.TemplateResponse(
-            request=request,
-            name="dashboard.html",
-            context={
-                "request": request,
-                "active_page": "dashboard",
-                "stats": stats,
-                "message": f"Manual dispatch completed (dry_run={dry_run}).",
-                **logs_ctx,
-            },
+    with closing(get_connection(db_path)) as conn:
+        repo = DatabaseRepository(conn)
+        stats = repo.get_dashboard_stats()
+        logs_ctx = _build_logs_pagination_context(
+            repo=repo,
+            page=page,
+            page_size=page_size,
+            status_filter=status_filter,
+            task_id_filter=task_id,
+            search_query=q,
         )
+
+    return templates.TemplateResponse(
+        request=request,
+        name="dashboard.html",
+        status_code=status.HTTP_202_ACCEPTED,
+        context={
+            "request": request,
+            "active_page": "dashboard",
+            "stats": stats,
+            "job": job,
+            "message": f"Dispatch started (dry_run={dry_run}).",
+            **logs_ctx,
+        },
+    )
 
 
 @router.post("/tasks/{task_id}/run", response_class=HTMLResponse)
-async def run_single_task(
+def run_single_task(
     task_id: str,
     request: Request,
     repo: DatabaseRepository = Depends(get_repo),
 ) -> Response:
-    lock: asyncio.Lock = request.app.state.dispatch_lock
-    if lock.locked():
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="A dispatch batch is already running.",
-        )
-
-    task = repo.get_mail_task(task_id)
-    if not task:
+    if repo.get_mail_task(task_id) is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Task '{task_id}' not found",
         )
 
-    async with lock:
-        settings = _get_settings(request)
-        template_dir = getattr(request.app.state, "template_dir", ".")
-        renderer = TemplateRenderer(template_dir=template_dir)
-        mailer = AsyncMailer(settings=settings, renderer=renderer)
+    db_path: str = request.app.state.db_path
+    template_dir: str = request.app.state.template_dir
+    settings = _get_settings(request)
 
+    async def work(job: DispatchJob) -> None:
+        job.result = await _dispatch_single_task(db_path, task_id, settings, template_dir)
+
+    job = _start_job(request, DispatchJob(kind="task", task_id=task_id), work)
+    return _render_dispatch_status(request, job, status_code=status.HTTP_202_ACCEPTED)
+
+
+@router.get("/dispatch/status", response_class=HTMLResponse)
+def get_dispatch_status(request: Request) -> Response:
+    """HTML status fragment; it keeps polling itself while a job is running."""
+    return _render_dispatch_status(request, _get_runner(request).current)
+
+
+@router.get("/api/dispatch/status", response_class=JSONResponse)
+def get_api_dispatch_status(request: Request) -> dict[str, Any]:
+    job = _get_runner(request).current
+    return job.to_dict() if job else {"state": "idle"}
+
+
+def _get_runner(request: Request) -> DispatchRunner:
+    runner: DispatchRunner = request.app.state.dispatch_runner
+    return runner
+
+
+def _start_job(request: Request, job: DispatchJob, work: JobWork) -> DispatchJob:
+    try:
+        return _get_runner(request).start(job, work)
+    except DispatchBusyError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+def _render_dispatch_status(
+    request: Request, job: DispatchJob | None, status_code: int = status.HTTP_200_OK
+) -> Response:
+    return templates.TemplateResponse(
+        request=request,
+        name="_dispatch_status.html",
+        status_code=status_code,
+        context={"request": request, "job": job},
+    )
+
+
+async def _dispatch_single_task(
+    db_path: str, task_id: str, settings: Settings, template_dir: str
+) -> TaskExecutionResult:
+    with closing(get_connection(db_path)) as conn:
+        repo = DatabaseRepository(conn)
+        task = repo.get_mail_task(task_id)
+        if task is None:
+            msg = f"Task '{task_id}' was deleted before it could run"
+            raise LookupError(msg)
+        mailer = AsyncMailer(settings=settings, renderer=TemplateRenderer(template_dir))
         async with mailer:
             res = await mailer.dispatch_task(task)
-
         repo.log_task_execution(res)
-
-        badge_class = (
-            "badge-success"
-            if res.status == TaskExecutionStatus.SUCCESS
-            else "badge-failed"
-            if res.status == TaskExecutionStatus.FAILED
-            else "badge-partial"
-        )
-        alert_class = "alert-error" if res.status == TaskExecutionStatus.FAILED else "alert-success"
-        error_suffix = f" — {html.escape(res.error_details)}" if res.error_details else ""
-
-        content = (
-            f'<div class="{alert_class}">'
-            f"Task '<strong>{html.escape(task_id)}</strong>' executed: "
-            f'<span class="{badge_class}">{res.status.value}</span> '
-            f"(Sent: {res.sent_count}){error_suffix}"
-            f"</div>"
-        )
-        return HTMLResponse(content=content)
+        return res
 
 
 def create_app(
@@ -974,6 +994,6 @@ def create_app(
     app.state.template_dir = str(template_dir)
     app.state.custom_settings = settings
     app.state.settings = settings or Settings.load()
-    app.state.dispatch_lock = asyncio.Lock()
+    app.state.dispatch_runner = DispatchRunner()
     app.include_router(router)
     return app

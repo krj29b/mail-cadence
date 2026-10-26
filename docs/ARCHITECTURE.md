@@ -69,7 +69,7 @@ flowchart TB
     Repo <--> SQLite_DB
 
     CLI_Entry --> Scheduler
-    Scheduler --> Repo
+    CLI_Entry --> Repo
     Scheduler --> Rate_Limiter
     Scheduler --> Sem_Manager
 
@@ -176,6 +176,7 @@ erDiagram
         TEXT error_details
         INTEGER attempt_count NOT NULL "DEFAULT 1"
         DATETIME executed_at NOT NULL "DEFAULT CURRENT_TIMESTAMP"
+        INTEGER dry_run NOT NULL "DEFAULT 0"
     }
 
     schedules ||--o{ hour_windows : "has (ON DELETE CASCADE)"
@@ -303,7 +304,8 @@ To prevent duplicate dispatches during an active schedule window:
   - `is_task_eligible()` returns `False`.
   - The task is skipped with status `SKIPPED_SCHEDULE`.
 - If `last_run` falls outside the active window instance or `last_status != SUCCESS` (e.g. `FAILED` or `PARTIAL`), the task is marked eligible for re-execution.
-- Dry-run executions are written to `execution_logs` only; they never update `last_run` / `last_status`, so they cannot block a real dispatch.
+- Dry-run executions are written to `execution_logs` only (flagged with `dry_run = 1` and excluded from dashboard statistics); they never update `last_run` / `last_status`, so they cannot block a real dispatch.
+- Saving a task (web panel or `save_single_task`) resets `last_run` / `last_status` only when the task definition changed. The panel's "Allow Resend" action (`POST /tasks/{id}/reset-window`) explicitly re-enables a dispatch in the current window.
 - The status report is sent only when at least one task was executed (success, partial or failed) and `report_settings` is configured.
 
 ---
@@ -419,7 +421,13 @@ stateDiagram-v2
 - Jinja2 environments (task renderer and status report) use `select_autoescape(enabled_extensions=mailer.AUTOESCAPE_EXTENSIONS, default_for_string=True)`, which enables autoescape for `html`, `htm`, `xml` and the compound `html.j2`, `htm.j2`, `xml.j2` extensions, and for templates rendered from strings.
 - Ensures context variables and SMTP error details rendered into HTML emails are auto-escaped. `*.txt.j2` templates are not escaped.
 
-### 5. Web Panel Access Control
+### 5. Web Panel Dispatch Jobs (`dispatch_jobs.py`)
+- `POST /dispatch/run` and `POST /tasks/{id}/run` start a background job and return `202` immediately. Each job runs in its own worker thread with a separate event loop and SQLite connection, so long batches never block the web server or exceed proxy timeouts.
+- `DispatchRunner.start` checks for a running job and claims the slot atomically; a concurrent request gets `409`.
+- Progress: `GET /dispatch/status` (HTML fragment, polls itself every 2 s while running) and `GET /api/dispatch/status` (JSON).
+- The slot is per process: run `serve` with a single worker. It does not coordinate with dispatches started from cron/systemd; those rely on window-level idempotency.
+
+### 6. Web Panel Access Control
 - Without `ADMIN_USER` and `ADMIN_PASSWORD` every request is refused with `503`. `mail-cadence serve --insecure-no-auth` opts out, and is only accepted with a loopback `--host`.
 - State-changing requests (`POST`, `PUT`, `PATCH`, `DELETE`) are rejected with `403` when `Sec-Fetch-Site` is not `same-origin`/`none` or when `Origin` does not match `Host` (CSRF protection for Basic Auth).
 

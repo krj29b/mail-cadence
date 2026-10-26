@@ -1,7 +1,7 @@
 import asyncio
-import sqlite3
 import time as time_module
-from datetime import UTC, datetime, time, timedelta
+from dataclasses import dataclass
+from datetime import UTC, datetime, time, timedelta, tzinfo
 from zoneinfo import ZoneInfo
 
 from mail_cadence.models import (
@@ -12,12 +12,12 @@ from mail_cadence.models import (
     WorkSchedules,
     parse_time_str,
 )
-from mail_cadence.repository import DatabaseRepository
 
 WEEKDAYS: list[str] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
 __all__ = [
     "TaskScheduler",
+    "TaskWindowStatus",
     "TokenBucketRateLimiter",
     "get_active_window",
     "is_day_matching",
@@ -94,23 +94,94 @@ class TokenBucketRateLimiter:
                 await asyncio.sleep(wait_time)
 
 
-class TaskScheduler:
-    def __init__(self, work_schedules: WorkSchedules | sqlite3.Connection) -> None:
-        if isinstance(work_schedules, sqlite3.Connection):
-            repo = DatabaseRepository(work_schedules)
-            self.work_schedules = repo.get_work_schedules()
-        else:
-            self.work_schedules = work_schedules
+@dataclass(frozen=True, slots=True)
+class TaskWindowStatus:
+    """Outcome of evaluating a task against its schedule at a reference time."""
 
+    schedule_found: bool
+    window: HourWindow | None
+    dispatched_in_window: bool
+
+    @property
+    def eligible(self) -> bool:
+        return self.window is not None and not self.dispatched_in_window
+
+    def skip_reason(self, schedule_ref: str) -> str | None:
+        """Human-readable reason why the task is not eligible, or None if it is."""
+        if not self.schedule_found:
+            return f"Schedule '{schedule_ref}' not found"
+        if self.window is None:
+            return f"Schedule '{schedule_ref}' not active at current time"
+        if self.dispatched_in_window:
+            return f"Task already dispatched in current '{schedule_ref}' window"
+        return None
+
+
+class TaskScheduler:
+    """Pure scheduling logic over WorkSchedules; it has no database access.
+
+    Load schedules with ``DatabaseRepository.get_work_schedules()`` and pass them in.
+    """
+
+    def __init__(self, work_schedules: WorkSchedules) -> None:
+        self.work_schedules = work_schedules
         self.timezone = ZoneInfo(self.work_schedules.timezone)
         self._schedules_by_id: dict[str, Schedule] = {
             s.id: s for s in self.work_schedules.schedules
         }
 
-    def _normalize_dt(self, dt: datetime | None, default_tz: ZoneInfo | None = None) -> datetime:
+    def now(self) -> datetime:
+        """Current time in the schedules' timezone."""
+        return datetime.now(self.timezone)
+
+    def active_window(
+        self, schedule_id: str, reference_dt: datetime | None = None
+    ) -> HourWindow | None:
+        """Return the window of ``schedule_id`` active at ``reference_dt`` (default: now)."""
+        schedule = self._schedules_by_id.get(schedule_id)
+        if schedule is None:
+            return None
+        return get_active_window(schedule, self._normalize_dt(reference_dt))
+
+    def window_status(
+        self,
+        task: MailTask,
+        reference_dt: datetime | None = None,
+        last_run: datetime | None = None,
+        last_status: TaskExecutionStatus | str | None = None,
+    ) -> TaskWindowStatus:
+        """Evaluate the task's schedule window and window-level idempotency at once."""
+        schedule = self._schedules_by_id.get(task.schedule_ref)
+        if schedule is None:
+            return TaskWindowStatus(schedule_found=False, window=None, dispatched_in_window=False)
+
+        ref_dt = self._normalize_dt(reference_dt)
+        window = get_active_window(schedule, ref_dt)
+        dispatched = window is not None and self._is_dispatched_in_window(
+            window, ref_dt, last_run, last_status
+        )
+        return TaskWindowStatus(schedule_found=True, window=window, dispatched_in_window=dispatched)
+
+    def _is_dispatched_in_window(
+        self,
+        window: HourWindow,
+        ref_dt: datetime,
+        last_run: datetime | None,
+        last_status: TaskExecutionStatus | str | None,
+    ) -> bool:
+        is_success = last_status == TaskExecutionStatus.SUCCESS or (
+            isinstance(last_status, str) and last_status.upper() == "SUCCESS"
+        )
+        if not is_success or last_run is None:
+            return False
+        last_run_tz = self._normalize_dt(last_run, default_tz=UTC)
+        window_start_dt, window_end_dt = self._get_window_bounds(window, ref_dt)
+        return window_start_dt <= last_run_tz <= window_end_dt
+
+    def _normalize_dt(self, dt: datetime | None, default_tz: tzinfo | None = None) -> datetime:
         tz = default_tz or self.timezone
         if dt is None:
-            return datetime.now(self.timezone)
+            return self.now()
         if dt.tzinfo is None:
             return dt.replace(tzinfo=tz).astimezone(self.timezone)
         return dt.astimezone(self.timezone)
@@ -144,22 +215,5 @@ class TaskScheduler:
         last_run: datetime | None = None,
         last_status: TaskExecutionStatus | str | None = None,
     ) -> tuple[bool, HourWindow | None]:
-        schedule = self._schedules_by_id.get(task.schedule_ref)
-        if not schedule:
-            return False, None
-
-        ref_dt = self._normalize_dt(reference_dt)
-        window = get_active_window(schedule, ref_dt)
-        if window is None:
-            return False, None
-
-        is_success = last_status == TaskExecutionStatus.SUCCESS or (
-            isinstance(last_status, str) and last_status.upper() == "SUCCESS"
-        )
-        if is_success and last_run is not None:
-            last_run_tz = self._normalize_dt(last_run, default_tz=UTC)  # type: ignore[arg-type]
-            window_start_dt, window_end_dt = self._get_window_bounds(window, ref_dt)
-            if window_start_dt <= last_run_tz <= window_end_dt:
-                return False, None
-
-        return True, window
+        status = self.window_status(task, reference_dt, last_run, last_status)
+        return status.eligible, status.window if status.eligible else None

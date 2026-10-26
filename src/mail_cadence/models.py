@@ -1,3 +1,4 @@
+import os
 from datetime import datetime, time
 from enum import StrEnum
 from functools import cached_property, lru_cache
@@ -9,7 +10,23 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic_xml import BaseXmlModel, attr, element, wrapped
 
-_PROJECT_ROOT_ENV = Path(__file__).resolve().parents[2] / ".env"
+ENV_FILE_VAR = "MAIL_CADENCE_ENV_FILE"
+
+
+def resolve_env_file() -> Path:
+    """Return the settings file: $MAIL_CADENCE_ENV_FILE if set, else ./.env.
+
+    An explicitly configured file must exist; the default ./.env is optional.
+    """
+    custom = os.environ.get(ENV_FILE_VAR, "").strip()
+    if not custom:
+        return Path(".env")
+    path = Path(custom).expanduser()
+    if not path.is_file():
+        msg = f"{ENV_FILE_VAR} points to a missing file: {path}"
+        raise FileNotFoundError(msg)
+    return path
+
 
 PRIORITY_ORDER: dict[str, int] = {"high": 0, "normal": 1, "low": 2}
 
@@ -205,7 +222,7 @@ class BatchSummaryReport(BaseModel):
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=(_PROJECT_ROOT_ENV, ".env"),
+        env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -224,4 +241,5 @@ class Settings(BaseSettings):
 
     @classmethod
     def load(cls) -> Self:
-        return cls()
+        # `_env_file` is pydantic-settings' runtime override; the mypy plugin does not model it.
+        return cls(_env_file=resolve_env_file())  # type: ignore[call-arg]

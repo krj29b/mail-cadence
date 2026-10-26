@@ -3,7 +3,18 @@ from pathlib import Path
 import pytest
 
 from mail_cadence.database import get_connection, init_db
-from mail_cadence.models import TaskExecutionResult, TaskExecutionStatus
+from mail_cadence.models import (
+    BodyTemplate,
+    HourWindow,
+    MailConfiguration,
+    MailTask,
+    Recipients,
+    ReportSettings,
+    Schedule,
+    TaskExecutionResult,
+    TaskExecutionStatus,
+    WorkSchedules,
+)
 from mail_cadence.repository import DatabaseRepository
 
 
@@ -95,3 +106,52 @@ def test_repository_count_and_pagination_with_filters_and_search(
     p3_ids = [log_item["id"] for log_item in p3]
     assert set(p1_ids).isdisjoint(set(p2_ids))
     assert set(p2_ids).isdisjoint(set(p3_ids))
+
+
+def _config(schedule_id: str, task_id: str) -> tuple[MailConfiguration, WorkSchedules]:
+    mail_config = MailConfiguration(
+        report_settings=ReportSettings(recipient="ops@example.com"),
+        tasks=[
+            MailTask(
+                id=task_id,
+                schedule_ref=schedule_id,
+                sender="s@example.com",
+                recipients=Recipients(to=["u@example.com"]),
+                subject="Subject",
+                body_template=BodyTemplate(template_path="builtin:daily_dispatch.html.j2"),
+            )
+        ],
+    )
+    work_schedules = WorkSchedules(
+        timezone="UTC",
+        schedules=[
+            Schedule(id=schedule_id, allowed_hours=[HourWindow(start="06:00", end="12:00")])
+        ],
+    )
+    return mail_config, work_schedules
+
+
+def test_import_configuration_replace_removes_old_tasks_and_schedules(
+    repo: DatabaseRepository,
+) -> None:
+    repo.import_configuration(*_config("OLD-SCHED", "OLD-TASK"))
+    # Replacing must delete tasks before their (RESTRICT-referenced) schedules.
+    repo.import_configuration(*_config("NEW-SCHED", "NEW-TASK"), mode="replace")
+
+    assert [t.id for t in repo.get_mail_tasks()] == ["NEW-TASK"]
+    assert [s.id for s in repo.get_work_schedules().schedules] == ["NEW-SCHED"]
+
+
+def test_import_configuration_upsert_keeps_existing(repo: DatabaseRepository) -> None:
+    repo.import_configuration(*_config("S1", "T1"))
+    repo.import_configuration(*_config("S2", "T2"))
+
+    assert [t.id for t in repo.get_mail_tasks()] == ["T1", "T2"]
+
+
+def test_get_logged_task_ids(repo: DatabaseRepository) -> None:
+    for task_id in ("a", "b", "a"):
+        repo.log_task_execution(
+            TaskExecutionResult(task_id=task_id, status=TaskExecutionStatus.SUCCESS)
+        )
+    assert sorted(repo.get_logged_task_ids()) == ["a", "b"]

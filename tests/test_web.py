@@ -1,9 +1,12 @@
+import asyncio
+import threading
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 from mail_cadence.database import get_connection, init_db
+from mail_cadence.dispatch_jobs import DispatchJob
 from mail_cadence.models import (
     HourWindow,
     MailTask,
@@ -366,10 +369,25 @@ def test_web_dispatch_trigger_run(tmp_db_path: Path, tmp_path: Path) -> None:
     app = create_app(db_path=tmp_db_path, template_dir=tmp_path, allow_insecure_no_auth=True)
     client = TestClient(app)
 
-    # Trigger run with dry_run
+    # Trigger run with dry_run: it starts in the background and returns immediately
     res = client.post("/dispatch/run", data={"dry_run": "true"})
-    assert res.status_code == 200
-    assert "Manual dispatch completed (dry_run=True)" in res.text
+    assert res.status_code == 202
+    assert "Dispatch started (dry_run=True)" in res.text
+
+    job = app.state.dispatch_runner.wait(timeout=30)
+    assert job is not None
+    assert job.state == "finished"
+
+    status_json = client.get("/api/dispatch/status").json()
+    assert status_json["kind"] == "batch"
+    assert status_json["state"] == "finished"
+    assert status_json["dry_run"] is True
+    assert status_json["exit_code"] == 0
+
+    fragment = client.get("/dispatch/status")
+    assert fragment.status_code == 200
+    assert "Dispatch batch finished (dry run)" in fragment.text
+    assert "hx-trigger" not in fragment.text  # polling stops once the job is done
 
 
 def test_web_dispatch_trigger_task_run(tmp_db_path: Path, tmp_path: Path) -> None:
@@ -393,10 +411,17 @@ def test_web_dispatch_trigger_task_run(tmp_db_path: Path, tmp_path: Path) -> Non
     client = TestClient(app)
 
     res = client.post("/tasks/task_single_run/run")
-    assert res.status_code == 200
+    assert res.status_code == 202
     assert "task_single_run" in res.text
-    assert "alert-error" in res.text
-    assert "Template rendering error" in res.text
+
+    job = app.state.dispatch_runner.wait(timeout=30)
+    assert job is not None
+    assert job.state == "finished"
+
+    done = client.get("/dispatch/status")
+    assert "task_single_run" in done.text
+    assert "alert-error" in done.text
+    assert "Template rendering error" in done.text
 
     # Test 404 for unknown task
     res_404 = client.post("/tasks/unknown_task/run")
@@ -493,23 +518,46 @@ def test_task_edit_resets_window_idempotency_and_skip_preserves_success(
     assert "Window Open • Ready" in resp_after_edit.text
 
 
-@pytest.mark.asyncio
-async def test_web_dispatch_lock_conflict(tmp_db_path: Path, tmp_path: Path) -> None:
+def test_web_dispatch_lock_conflict(tmp_db_path: Path, tmp_path: Path) -> None:
+    conn = get_connection(tmp_db_path)
+    DatabaseRepository(conn).save_single_task(
+        MailTask.model_validate(
+            {
+                "id": "busy_task",
+                "schedule_ref": "sched_default",
+                "sender": "sender@example.com",
+                "recipients": {"to": ["to@example.com"]},
+                "subject": "Busy",
+                "body_template": {"format": "html", "template_path": "tpl.html"},
+            }
+        )
+    )
+    conn.close()
+
     app = create_app(db_path=tmp_db_path, template_dir=tmp_path, allow_insecure_no_auth=True)
     client = TestClient(app)
+    release = threading.Event()
 
-    # Acquire lock manually
-    await app.state.dispatch_lock.acquire()
+    async def blocking_work(_job: DispatchJob) -> None:
+        await asyncio.to_thread(release.wait, 30)
+
+    app.state.dispatch_runner.start(DispatchJob(kind="batch"), blocking_work)
     try:
+        running = client.get("/dispatch/status")
+        assert "hx-trigger" in running.text  # keeps polling while running
+
         res_dispatch = client.post("/dispatch/run")
         assert res_dispatch.status_code == 409
         assert "A dispatch batch is already running." in res_dispatch.json()["detail"]
 
-        res_task = client.post("/tasks/sched_default/run")
+        res_task = client.post("/tasks/busy_task/run")
         assert res_task.status_code == 409
         assert "A dispatch batch is already running." in res_task.json()["detail"]
     finally:
-        app.state.dispatch_lock.release()
+        release.set()
+        app.state.dispatch_runner.wait(timeout=30)
+
+    assert client.get("/api/dispatch/status").json()["state"] == "finished"
 
 
 def test_api_task_detail_and_edit_query(client: TestClient, tmp_db_path: Path) -> None:
@@ -725,7 +773,8 @@ def test_web_rejects_cross_site_state_changes(client: TestClient) -> None:
         data=form,
         headers={"Origin": "http://testserver", "Sec-Fetch-Site": "same-origin"},
     )
-    assert same_origin.status_code == 200
+    assert same_origin.status_code == 202
+    client.app.state.dispatch_runner.wait(timeout=30)  # type: ignore[attr-defined]
 
     # Safe methods are not affected.
     assert client.get("/", headers={"Sec-Fetch-Site": "cross-site"}).status_code == 200

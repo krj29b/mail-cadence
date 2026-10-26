@@ -270,12 +270,29 @@ class DatabaseRepository:
         self._save_report_settings(mail_config.report_settings)
 
         if mode == "replace":
-            self.conn.execute("DELETE FROM task_context_variables")
-            self.conn.execute("DELETE FROM task_recipients")
-            self.conn.execute("DELETE FROM tasks")
+            self._delete_all_tasks()
 
         for task in mail_config.tasks:
             self._save_task(task, mode=mode)
+
+    def import_configuration(
+        self,
+        mail_config: MailConfiguration,
+        work_schedules: WorkSchedules,
+        mode: Literal["upsert", "replace"] = "upsert",
+    ) -> None:
+        """Save schedules and tasks in a single transaction (all or nothing)."""
+        with self.conn:
+            if mode == "replace":
+                # tasks.schedule_ref is ON DELETE RESTRICT: remove tasks before schedules.
+                self._delete_all_tasks()
+            self._save_work_schedules(work_schedules, mode=mode)
+            self._save_mail_configuration(mail_config, mode=mode)
+
+    def _delete_all_tasks(self) -> None:
+        self.conn.execute("DELETE FROM task_context_variables")
+        self.conn.execute("DELETE FROM task_recipients")
+        self.conn.execute("DELETE FROM tasks")
 
     def _save_task(
         self,
@@ -358,14 +375,14 @@ class DatabaseRepository:
         self,
         result: TaskExecutionResult,
         batch_id: str | None = None,
-        update_state: bool = True,
+        dry_run: bool = False,
         executed_at: datetime | None = None,
     ) -> None:
-        """Append an execution log entry and, unless disabled, update the task window state.
+        """Append an execution log entry and update the task window state.
 
-        Pass ``update_state=False`` for simulated (dry-run) executions so they never
-        mark a task as dispatched in its active window. ``executed_at`` overrides the
-        ``last_run`` timestamp (defaults to the current time).
+        Simulated executions (``dry_run=True``) are flagged in ``execution_logs`` and never
+        update the task state, so they cannot mark a task as dispatched in its window.
+        ``executed_at`` overrides the ``last_run`` timestamp (defaults to the current time).
         """
         failed_recipients_str = json.dumps(result.failed_recipients)
         with self.conn:
@@ -373,8 +390,8 @@ class DatabaseRepository:
                 """
                 INSERT INTO execution_logs
                 (batch_id, task_id, status, sent_count, failed_recipients,
-                 duration_ms, error_details, attempt_count)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 duration_ms, error_details, attempt_count, dry_run)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     batch_id,
@@ -385,10 +402,11 @@ class DatabaseRepository:
                     result.duration_ms,
                     result.error_details,
                     result.attempt_count,
+                    int(dry_run),
                 ),
             )
 
-            if update_state and result.status != TaskExecutionStatus.SKIPPED_SCHEDULE:
+            if not dry_run and result.status != TaskExecutionStatus.SKIPPED_SCHEDULE:
                 run_at = executed_at or datetime.now(UTC)
                 if run_at.tzinfo is None:
                     run_at = run_at.replace(tzinfo=UTC)
@@ -526,19 +544,39 @@ class DatabaseRepository:
             context_variables=context_vars,
         )
 
-    def save_single_task(self, task: MailTask) -> None:
+    def save_single_task(self, task: MailTask, reset_window_state: bool | None = None) -> bool:
+        """Upsert a task and return whether its window state was reset.
+
+        ``reset_window_state=None`` (default) resets ``last_run``/``last_status`` only when
+        the task definition changed, so saving an unchanged task never re-enables a
+        dispatch in the current window. Pass ``True``/``False`` to force either behaviour.
+        """
+        if reset_window_state is None:
+            existing = self.get_mail_task(task.id)
+            reset_window_state = existing is None or existing.model_dump() != task.model_dump()
         with self.conn:
             self._save_task(task, mode="upsert")
-            self.conn.execute(
-                """
-                UPDATE tasks
-                SET last_run = NULL,
-                    last_status = NULL,
-                    last_error = NULL
-                WHERE id = ?
-                """,
-                (task.id,),
-            )
+            if reset_window_state:
+                self._reset_task_window_state(task.id)
+        return reset_window_state
+
+    def reset_task_window_state(self, task_id: str) -> bool:
+        """Allow a task to be dispatched again in its current window."""
+        with self.conn:
+            return self._reset_task_window_state(task_id)
+
+    def _reset_task_window_state(self, task_id: str) -> bool:
+        cursor = self.conn.execute(
+            """
+            UPDATE tasks
+            SET last_run = NULL,
+                last_status = NULL,
+                last_error = NULL
+            WHERE id = ?
+            """,
+            (task_id,),
+        )
+        return cursor.rowcount > 0
 
     def delete_mail_task(self, task_id: str) -> bool:
         with self.conn:
@@ -595,7 +633,7 @@ class DatabaseRepository:
     ) -> list[dict[str, Any]]:
         query = [
             "SELECT id, batch_id, task_id, status, sent_count, failed_recipients,",
-            "       duration_ms, error_details, attempt_count, executed_at",
+            "       duration_ms, error_details, attempt_count, executed_at, dry_run",
             "FROM execution_logs",
         ]
         conditions: list[str] = []
@@ -630,6 +668,11 @@ class DatabaseRepository:
             logs.append(d)
         return logs
 
+    def get_logged_task_ids(self) -> list[str]:
+        """Task IDs that appear in the execution history (including deleted tasks)."""
+        rows = self.conn.execute("SELECT DISTINCT task_id FROM execution_logs").fetchall()
+        return [r["task_id"] for r in rows]
+
     def count_execution_logs(
         self,
         status_filter: str | None = None,
@@ -660,12 +703,18 @@ class DatabaseRepository:
         return int(row[0]) if row and row[0] is not None else 0
 
     def get_dashboard_stats(self) -> dict[str, Any]:
+        """Aggregate execution statistics; dry-run entries are counted separately only."""
         total_tasks = self.conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
         total_schedules = self.conn.execute("SELECT COUNT(*) FROM schedules").fetchone()[0]
-        total_executions = self.conn.execute("SELECT COUNT(*) FROM execution_logs").fetchone()[0]
+        total_executions = self.conn.execute(
+            "SELECT COUNT(*) FROM execution_logs WHERE dry_run = 0"
+        ).fetchone()[0]
+        dry_run_count = self.conn.execute(
+            "SELECT COUNT(*) FROM execution_logs WHERE dry_run = 1"
+        ).fetchone()[0]
 
         status_rows = self.conn.execute(
-            "SELECT status, COUNT(*) as cnt FROM execution_logs GROUP BY status"
+            "SELECT status, COUNT(*) as cnt FROM execution_logs WHERE dry_run = 0 GROUP BY status"
         ).fetchall()
         status_counts: dict[str, int] = {
             "SUCCESS": 0,
@@ -676,16 +725,21 @@ class DatabaseRepository:
         for sr in status_rows:
             status_counts[sr["status"]] = sr["cnt"]
 
-        tot_sent_row = self.conn.execute("SELECT SUM(sent_count) FROM execution_logs").fetchone()
+        tot_sent_row = self.conn.execute(
+            "SELECT SUM(sent_count) FROM execution_logs WHERE dry_run = 0"
+        ).fetchone()
         total_emails_sent = tot_sent_row[0] if tot_sent_row and tot_sent_row[0] is not None else 0
 
-        avg_dur_row = self.conn.execute("SELECT AVG(duration_ms) FROM execution_logs").fetchone()
+        avg_dur_row = self.conn.execute(
+            "SELECT AVG(duration_ms) FROM execution_logs WHERE dry_run = 0"
+        ).fetchone()
         avg_duration_ms = avg_dur_row[0] if avg_dur_row and avg_dur_row[0] is not None else 0.0
 
         return {
             "total_tasks": total_tasks,
             "total_schedules": total_schedules,
             "total_executions": total_executions,
+            "dry_run_count": dry_run_count,
             "success_count": status_counts.get("SUCCESS", 0),
             "partial_count": status_counts.get("PARTIAL", 0),
             "failed_count": status_counts.get("FAILED", 0),

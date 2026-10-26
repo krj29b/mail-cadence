@@ -561,3 +561,74 @@ def test_dst_europe_warsaw_cross_midnight_transitions() -> None:
         task, reference_dt=ref_autumn_morning, last_run=last_run_autumn, last_status="SUCCESS"
     )
     assert eligible_autumn_morning is False
+
+
+def _window_status_scheduler() -> TaskScheduler:
+    return TaskScheduler(
+        WorkSchedules(
+            timezone="Europe/Warsaw",
+            schedules=[
+                Schedule(
+                    id="SCHED-MORNING",
+                    allowed_hours=[HourWindow(start="06:00", end="12:00")],
+                )
+            ],
+        )
+    )
+
+
+def _window_status_task(schedule_ref: str = "SCHED-MORNING") -> MailTask:
+    return MailTask(
+        id="T1",
+        schedule_ref=schedule_ref,
+        sender="s@example.com",
+        recipients=Recipients(to=["r@example.com"]),
+        subject="Subject",
+        body_template=BodyTemplate(template_path="t.j2"),
+    )
+
+
+def test_window_status_and_skip_reasons() -> None:
+    scheduler = _window_status_scheduler()
+    warsaw = ZoneInfo("Europe/Warsaw")
+    in_window = datetime(2026, 10, 17, 8, 0, tzinfo=warsaw)
+    outside = datetime(2026, 10, 17, 3, 0, tzinfo=warsaw)
+    sent_today = datetime(2026, 10, 17, 6, 30, tzinfo=ZoneInfo("UTC"))  # 08:30 Warsaw
+
+    ready = scheduler.window_status(_window_status_task(), reference_dt=in_window)
+    assert ready.eligible
+    assert ready.window is not None
+    assert ready.skip_reason("SCHED-MORNING") is None
+
+    sent = scheduler.window_status(
+        _window_status_task(), reference_dt=in_window, last_run=sent_today, last_status="SUCCESS"
+    )
+    assert sent.dispatched_in_window
+    assert not sent.eligible
+    assert sent.window is not None
+    assert "already dispatched" in (sent.skip_reason("SCHED-MORNING") or "")
+
+    failed = scheduler.window_status(
+        _window_status_task(), reference_dt=in_window, last_run=sent_today, last_status="FAILED"
+    )
+    assert failed.eligible
+
+    closed = scheduler.window_status(_window_status_task(), reference_dt=outside)
+    assert closed.window is None
+    assert "not active" in (closed.skip_reason("SCHED-MORNING") or "")
+
+    missing = scheduler.window_status(_window_status_task("NOPE"), reference_dt=in_window)
+    assert not missing.schedule_found
+    assert missing.skip_reason("NOPE") == "Schedule 'NOPE' not found"
+
+
+def test_active_window_and_now() -> None:
+    scheduler = _window_status_scheduler()
+    warsaw = ZoneInfo("Europe/Warsaw")
+    assert scheduler.active_window("SCHED-MORNING", datetime(2026, 10, 17, 8, 0, tzinfo=warsaw))
+    assert (
+        scheduler.active_window("SCHED-MORNING", datetime(2026, 10, 17, 3, 0, tzinfo=warsaw))
+        is None
+    )
+    assert scheduler.active_window("NOPE") is None
+    assert scheduler.now().tzinfo == warsaw

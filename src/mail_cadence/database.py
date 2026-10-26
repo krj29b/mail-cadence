@@ -77,7 +77,8 @@ CREATE TABLE IF NOT EXISTS execution_logs (
     duration_ms REAL NOT NULL DEFAULT 0.0,
     error_details TEXT,
     attempt_count INTEGER NOT NULL DEFAULT 1,
-    executed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    executed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    dry_run INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_hour_windows_schedule_id ON hour_windows(schedule_id);
@@ -107,10 +108,17 @@ def get_connection(
     return conn
 
 
+# Columns added after the first schema version: (table, column, definition).
+_ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("hour_windows", "days_of_week", "TEXT NOT NULL DEFAULT '*'"),
+    ("execution_logs", "dry_run", "INTEGER NOT NULL DEFAULT 0"),
+)
+
+
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA_SQL)
-    cursor = conn.execute("PRAGMA table_info(hour_windows)")
-    cols = [row["name"] for row in cursor.fetchall()]
-    if "days_of_week" not in cols:
-        conn.execute("ALTER TABLE hour_windows ADD COLUMN days_of_week TEXT NOT NULL DEFAULT '*'")
+    for table, column, definition in _ADDED_COLUMNS:
+        cols = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if column not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
     conn.commit()

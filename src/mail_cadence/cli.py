@@ -25,7 +25,7 @@ from mail_cadence.models import (
 )
 from mail_cadence.reporter import ReportGenerator, aggregate_summary_report
 from mail_cadence.repository import DatabaseRepository
-from mail_cadence.scheduler import TaskScheduler, TokenBucketRateLimiter, get_active_window
+from mail_cadence.scheduler import TaskScheduler, TokenBucketRateLimiter
 from mail_cadence.xml_loader import (
     XMLValidationError,
     export_to_xml,
@@ -72,18 +72,6 @@ def _seed_xml_if_provided(
         return False
 
 
-def _get_skip_reason(
-    scheduler: TaskScheduler,
-    task: MailTask,
-    ref_dt: datetime | None,
-) -> str:
-    schedule = scheduler._schedules_by_id.get(task.schedule_ref)
-    norm_dt = scheduler._normalize_dt(ref_dt)
-    if schedule is not None and get_active_window(schedule, norm_dt) is not None:
-        return f"Task already dispatched in current '{task.schedule_ref}' window"
-    return f"Schedule '{task.schedule_ref}' not active at current time"
-
-
 def _partition_eligible_tasks(
     mail_config: MailConfiguration,
     work_schedules: WorkSchedules,
@@ -105,10 +93,11 @@ def _partition_eligible_tasks(
 
     for task in mail_config.tasks:
         last_run, last_status = execution_states.get(task.id, (None, None))
-        eligible, window = scheduler.is_task_eligible(
+        window_status = scheduler.window_status(
             task, reference_dt=ref_dt, last_run=last_run, last_status=last_status
         )
-        if eligible and window is not None:
+        window = window_status.window
+        if window_status.eligible and window is not None:
             key = (task.schedule_ref, window.start, window.end)
             if key not in window_controls:
                 window_controls[key] = (
@@ -121,7 +110,7 @@ def _partition_eligible_tasks(
             rate_limiter, semaphore = window_controls[key]
             eligible_tasks.append((task, rate_limiter, semaphore))
         else:
-            skip_reason = _get_skip_reason(scheduler, task, ref_dt)
+            skip_reason = window_status.skip_reason(task.schedule_ref)
             logger.info(f"Task {task.id} skipped due to schedule rules ({skip_reason}).")
             skipped_res = TaskExecutionResult(
                 task_id=task.id,
@@ -230,7 +219,7 @@ async def run_dispatch_pipeline(
                     logger.info(f"Executing task {task.id}...")
                     res = await mailer.dispatch_task(task, rate_limiter=rate_limiter)
                     repo.log_task_execution(
-                        res, batch_id=batch_id, update_state=not dry_run, executed_at=ref_dt
+                        res, batch_id=batch_id, dry_run=dry_run, executed_at=ref_dt
                     )
                     return res
 
