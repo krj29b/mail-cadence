@@ -53,6 +53,13 @@ def test_parse_xml_safely_missing_file() -> None:
         _parse_xml_safely(fake_path_obj)
 
 
+def test_parse_xml_safely_malformed_xml(tmp_path: Path) -> None:
+    malformed_file = tmp_path / "malformed.xml"
+    malformed_file.write_bytes(b"<root><unclosed></root>")
+    with pytest.raises(XMLValidationError, match="XML security/syntax error in"):
+        _parse_xml_safely(malformed_file)
+
+
 def test_invalid_schedule_reference(tmp_path: Path) -> None:
     tasks_xml = tmp_path / "tasks.xml"
     schedules_xml = tmp_path / "schedules.xml"
