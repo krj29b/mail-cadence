@@ -2,15 +2,27 @@
 
 import logging
 from pathlib import Path
+from typing import cast
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from starlette.types import ASGIApp
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from mail_cadence.login_throttle import LoginThrottle
 from mail_cadence.models import Settings
 from mail_cadence.web import create_app
 
 USER, PASSWORD = "admin", "correct-horse"
+
+
+def _client_from(app: FastAPI, ip: str) -> TestClient:
+    # Same path as production: uvicorn's proxy middleware sets the client IP from
+    # X-Forwarded-For (TestClient(client=...) needs Starlette >= 0.39).
+    # uvicorn and Starlette type the same ASGI interface differently, hence the casts.
+    proxied = ProxyHeadersMiddleware(cast("ASGIApp", app), trusted_hosts="*")  # type: ignore[arg-type]
+    return TestClient(cast("ASGIApp", proxied), headers={"X-Forwarded-For": ip})
 
 
 class FakeClock:
@@ -83,7 +95,7 @@ def app_and_clock(tmp_path: Path) -> tuple[TestClient, FakeClock]:
     app = create_app(db_path=tmp_path / "auth.db", template_dir=tmp_path, settings=settings)
     clock = FakeClock()
     app.state.login_throttle = LoginThrottle(max_failures=3, window_seconds=60, clock=clock)
-    return TestClient(app, client=("203.0.113.7", 50000)), clock
+    return _client_from(app, "203.0.113.7"), clock
 
 
 def test_settings_configure_the_throttle(tmp_path: Path) -> None:
@@ -144,5 +156,5 @@ def test_other_clients_are_not_blocked(app_and_clock: tuple[TestClient, FakeCloc
     client, _ = app_and_clock
     for _ in range(3):
         client.get("/", auth=(USER, "wrong"))
-    other = TestClient(client.app, client=("198.51.100.9", 50000))
+    other = TestClient(client.app, headers={"X-Forwarded-For": "198.51.100.9"})
     assert other.get("/", auth=(USER, PASSWORD)).status_code == 200
