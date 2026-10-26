@@ -16,7 +16,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from mail_cadence.database import get_connection, init_db
-from mail_cadence.mailer import AsyncMailer, TemplateRenderer
+from mail_cadence.mailer import INSECURE_SMTP_AUTH_MESSAGE, AsyncMailer, TemplateRenderer
 from mail_cadence.models import (
     PRIORITY_ORDER,
     BatchSummaryReport,
@@ -64,6 +64,9 @@ class _LoadedConfig:
 
 async def run_dispatch(options: DispatchOptions, settings: Settings) -> int:
     """Run one dispatch batch. Returns 0 (ok), 1 (configuration error) or 2 (a task failed)."""
+    if not options.dry_run and settings.smtp_auth_blocked:
+        logger.error(f"Configuration error: {INSECURE_SMTP_AUTH_MESSAGE}")
+        return EXIT_CONFIG_ERROR
     start_time = datetime.now(UTC)
     logger.info(
         f"Starting MailCadence email dispatch engine "

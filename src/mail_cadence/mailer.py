@@ -205,6 +205,17 @@ def _try_int(val: Any) -> int | None:
         return None
 
 
+INSECURE_SMTP_AUTH_MESSAGE = (
+    "SMTP_USER and SMTP_PASSWORD are set, but neither SMTP_USE_TLS nor SMTP_START_TLS is "
+    "enabled, so the password would be sent unencrypted. Enable TLS or STARTTLS, or set "
+    "SMTP_ALLOW_INSECURE_AUTH=true for a trusted local relay."
+)
+
+
+class InsecureSMTPAuthError(ValueError):
+    """SMTP login without TLS/STARTTLS was configured but not explicitly allowed."""
+
+
 class AsyncMailer:
     def __init__(
         self,
@@ -213,6 +224,14 @@ class AsyncMailer:
         dry_run: bool = False,
         smtp_client: SMTPClient | None = None,
     ) -> None:
+        if not dry_run and smtp_client is None:
+            # Dry runs and injected clients never log in to a real server.
+            if settings.smtp_auth_blocked:
+                raise InsecureSMTPAuthError(INSECURE_SMTP_AUTH_MESSAGE)
+            if settings.smtp_auth_unencrypted:
+                logger.warning(
+                    "SMTP password is sent without TLS/STARTTLS (SMTP_ALLOW_INSECURE_AUTH=true)."
+                )
         self.settings = settings
         self.renderer = renderer or TemplateRenderer()
         self.dry_run = dry_run
@@ -283,7 +302,9 @@ class AsyncMailer:
             hostname=self.settings.smtp_host,
             port=self.settings.smtp_port,
             username=self.settings.smtp_user or None,
-            password=self.settings.smtp_password or None,
+            password=password.get_secret_value()
+            if (password := self.settings.smtp_password)
+            else None,
             use_tls=self.settings.smtp_use_tls,
             start_tls=self.settings.smtp_start_tls,
             timeout=self.settings.smtp_timeout,

@@ -69,6 +69,17 @@
           <dd class="text-slate-200">{{ smtp_settings.smtp_timeout }}s</dd>
         </div>
       </dl>
+      {% if smtp_settings.smtp_auth_blocked %}
+      <div class="alert-error flex items-start gap-2" role="alert">
+        <i data-lucide="alert-triangle" class="w-4 h-4 shrink-0 mt-0.5"></i>
+        <span>The SMTP password would be sent unencrypted, so real dispatches are refused. Set <code>SMTP_START_TLS=true</code> or <code>SMTP_USE_TLS=true</code>, or <code>SMTP_ALLOW_INSECURE_AUTH=true</code> for a trusted local relay.</span>
+      </div>
+      {% elif smtp_settings.smtp_auth_unencrypted %}
+      <div class="alert-error flex items-start gap-2" role="alert">
+        <i data-lucide="alert-triangle" class="w-4 h-4 shrink-0 mt-0.5"></i>
+        <span>The SMTP password is sent without encryption (<code>SMTP_ALLOW_INSECURE_AUTH=true</code>).</span>
+      </div>
+      {% endif %}
     </div>
     {% endif %}
   </div>

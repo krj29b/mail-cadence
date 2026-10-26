@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import SecretStr
 
 from mail_cadence.database import get_connection, init_db
 from mail_cadence.dispatch_jobs import DispatchJob
@@ -373,7 +374,7 @@ def test_web_basic_auth_disabled_and_enabled(tmp_db_path: Path, tmp_path: Path) 
     assert res_open.status_code == 200
 
     # 2. Set admin_user & admin_password -> Protected access
-    auth_settings = Settings(admin_user="admin", admin_password="secret123")  # noqa: S106
+    auth_settings = Settings(admin_user="admin", admin_password=SecretStr("secret123"))
     auth_app = create_app(db_path=tmp_db_path, template_dir=tmp_path, settings=auth_settings)
     auth_client = TestClient(auth_app)
 

@@ -127,7 +127,7 @@ def verify_credentials(
     client = _client_address(request)
     # Checked before the password, so a blocked client cannot learn if a guess was right.
     _raise_if_throttled(throttle, client)
-    if not _credentials_match(credentials, admin_user, admin_password):
+    if not _credentials_match(credentials, admin_user, admin_password.get_secret_value()):
         if throttle.record_failure(client):
             logger.warning(
                 f"Too many failed admin logins from {client}: blocked for up to "

@@ -7,6 +7,7 @@ from typing import cast
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from pydantic import SecretStr
 from starlette.types import ASGIApp
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
@@ -88,7 +89,7 @@ def test_rejects_invalid_limits() -> None:
 def app_and_clock(tmp_path: Path) -> tuple[TestClient, FakeClock]:
     settings = Settings(
         admin_user=USER,
-        admin_password=PASSWORD,
+        admin_password=SecretStr(PASSWORD),
         admin_login_max_failures=3,
         admin_login_window_seconds=60,
     )

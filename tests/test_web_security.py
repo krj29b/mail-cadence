@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import SecretStr
 
 from mail_cadence.database import get_connection, init_db
 from mail_cadence.models import (
@@ -137,7 +138,7 @@ def test_preview_is_sandboxed(client: TestClient) -> None:
 
 
 def test_static_assets_do_not_need_credentials(tmp_path: Path) -> None:
-    settings = Settings(admin_user="admin", admin_password="secret")  # noqa: S106
+    settings = Settings(admin_user="admin", admin_password=SecretStr("secret"))
     client = TestClient(create_app(db_path=tmp_path / "auth.db", settings=settings))
     assert client.get("/").status_code == 401
     assert client.get("/static/app.css").status_code == 200

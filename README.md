@@ -55,9 +55,10 @@ Supported environment settings defined in `mail_cadence.models.Settings`:
 | `SMTP_HOST` | `localhost` | Hostname or IP address of the SMTP server |
 | `SMTP_PORT` | `1025` | Port number for the SMTP server |
 | `SMTP_USER` | *None* | Username for SMTP authentication (optional) |
-| `SMTP_PASSWORD` | *None* | Password for SMTP authentication (optional) |
-| `SMTP_USE_TLS` | `false` | Enable direct TLS connection (`true`/`false`) |
-| `SMTP_START_TLS` | `false` | Enable STARTTLS command upgrade (`true`/`false`) |
+| `SMTP_PASSWORD` | *None* | Password for SMTP authentication (optional). With `SMTP_USER` and `SMTP_PASSWORD` set, `SMTP_USE_TLS` or `SMTP_START_TLS` is required, see `SMTP_ALLOW_INSECURE_AUTH` |
+| `SMTP_USE_TLS` | `false` | Enable direct TLS connection (`true`/`false`), usually port 465 |
+| `SMTP_START_TLS` | `false` | Enable STARTTLS command upgrade (`true`/`false`), usually port 587 |
+| `SMTP_ALLOW_INSECURE_AUTH` | `false` | Allow SMTP login without TLS/STARTTLS. Without it, a real run with a password but no encryption stops with exit code `1` (dry runs still work). Only for a trusted relay on the same machine or network |
 | `SMTP_TIMEOUT` | `30.0` | Timeout in seconds for SMTP operations |
 | `MAIL_CADENCE_DB` | `mail_cadence.db` | Path to SQLite database file |
 | `MAIL_CADENCE_ENV_FILE` | `./.env` | Path to the `.env` file with these settings. When set, the file must exist. Without it, `.env` is read from the current directory (if present) |

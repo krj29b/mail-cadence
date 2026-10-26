@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Self
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic_xml import BaseXmlModel, attr, element, wrapped
 
@@ -274,17 +274,31 @@ class Settings(BaseSettings):
     smtp_host: str = "localhost"
     smtp_port: int = 1025
     smtp_user: str | None = None
-    smtp_password: str | None = None
+    # SecretStr: shown as '**********' in repr, logs and dumps; read with get_secret_value().
+    smtp_password: SecretStr | None = None
     smtp_use_tls: bool = False
     smtp_start_tls: bool = False
+    # Allow SMTP login without TLS/STARTTLS (only for a trusted local relay).
+    smtp_allow_insecure_auth: bool = False
     smtp_timeout: float = 30.0
     mail_cadence_db: str = "mail_cadence.db"
 
     admin_user: str | None = None
-    admin_password: str | None = None
+    admin_password: SecretStr | None = None
     # Wrong web panel logins allowed per client IP within the window (then 429).
     admin_login_max_failures: int = Field(default=10, ge=1)
     admin_login_window_seconds: float = Field(default=900.0, gt=0)
+
+    @property
+    def smtp_auth_unencrypted(self) -> bool:
+        """SMTP login is configured, but neither TLS nor STARTTLS: the password is sent in clear."""
+        has_credentials = bool(self.smtp_user and self.smtp_password)
+        return has_credentials and not (self.smtp_use_tls or self.smtp_start_tls)
+
+    @property
+    def smtp_auth_blocked(self) -> bool:
+        """Unencrypted SMTP login that was not explicitly allowed; real sends are refused."""
+        return self.smtp_auth_unencrypted and not self.smtp_allow_insecure_auth
 
     @classmethod
     def load(cls) -> Self:

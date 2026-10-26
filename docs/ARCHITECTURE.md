@@ -475,6 +475,11 @@ stateDiagram-v2
 - htmx runs with `allowEval`, `allowScriptTags` and `includeIndicatorStyles` disabled (`<meta name="htmx-config">`), so no `hx-on`, `js:` expressions or inline scripts in swapped HTML.
 - The template preview (`GET /tasks/{id}/preview`) has its own `Content-Security-Policy: sandbox; default-src 'none'; ...`: it renders in an opaque origin without scripts, so a template cannot act on the panel. Inline styles and remote images stay allowed because emails use them.
 
+### 8. Credentials & SMTP Transport Security
+- `Settings.smtp_password` and `Settings.admin_password` are `pydantic.SecretStr`: they print as `**********` in `repr`, logs, `model_dump()` and tracebacks. The real value is read with `get_secret_value()` only where it is needed: `AsyncMailer._get_smtp_connection` (SMTP login) and `web._credentials_match` (panel login).
+- aiosmtplib logs in over a plain connection whenever the server advertises `AUTH`. So with `SMTP_USER` and `SMTP_PASSWORD` set and neither `SMTP_USE_TLS` nor `SMTP_START_TLS` (`Settings.smtp_auth_unencrypted`), real sends are refused (`Settings.smtp_auth_blocked`): `run_dispatch` exits with code `1` before opening the database, and `AsyncMailer(...)` raises `InsecureSMTPAuthError`. `SMTP_ALLOW_INSECURE_AUTH=true` opts out with a warning. Dry runs and injected SMTP clients are not affected. The panel's settings page shows a warning in both cases.
+- TLS certificates are verified (aiosmtplib default); there is no setting to turn that off.
+
 ### 4. SMTP Header Injection Prevention
 - Header string fields (`sender`, `recipient`, `subject`, `to`, `cc`, `bcc`) are validated using `_check_no_newlines` Pydantic validators in `models.py`; address fields additionally go through `_check_email_address` (one parseable address per entry).
 - Rejects inputs containing CR (`\r`) or LF (`\n`) characters, preventing SMTP command injection and unauthorized header injection.
