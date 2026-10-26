@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from mail_cadence.models import (
+    END_OF_DAY,
     BodyTemplate,
     ContextVar,
     HourWindow,
@@ -12,6 +13,7 @@ from mail_cadence.models import (
     ReportSettings,
     WorkSchedules,
     parse_time_str,
+    parse_window_end,
 )
 
 
@@ -113,6 +115,25 @@ def test_parse_time_str() -> None:
 
     with pytest.raises(ValueError):
         parse_time_str("invalid")
+
+
+def test_parse_window_end() -> None:
+    assert parse_window_end(END_OF_DAY) == time.max
+    assert parse_window_end(f"{END_OF_DAY}:00") == time.max
+    assert parse_window_end(" 24:00 ") == time.max
+    assert parse_window_end(" 24:00:00 ") == time.max
+
+    assert parse_window_end("17:00") == time(17, 0, 0)
+    assert parse_window_end("08:30:15") == time(8, 30, 15)
+
+    with pytest.raises(ValueError):
+        parse_window_end("24:01")
+
+    with pytest.raises(ValueError):
+        parse_window_end("invalid")
+
+    with pytest.raises(ValueError):
+        parse_window_end(123)  # type: ignore[arg-type]
 
 
 def test_hour_window_start_and_end_time() -> None:

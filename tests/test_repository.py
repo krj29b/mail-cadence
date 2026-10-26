@@ -155,3 +155,47 @@ def test_get_logged_task_ids(repo: DatabaseRepository) -> None:
             TaskExecutionResult(task_id=task_id, status=TaskExecutionStatus.SUCCESS)
         )
     assert sorted(repo.get_logged_task_ids()) == ["a", "b"]
+
+
+def test_delete_schedule_success(repo: DatabaseRepository) -> None:
+    schedule = Schedule(
+        id="SCHED-1",
+        description="Daily Morning",
+        allowed_hours=[HourWindow(start="08:00", end="12:00")],
+    )
+    repo.save_single_schedule(schedule)
+    assert repo.schedule_exists("SCHED-1") is True
+
+    # Verify hour window was inserted
+    hw_count_before = repo.conn.execute(
+        "SELECT COUNT(*) FROM hour_windows WHERE schedule_id = 'SCHED-1'"
+    ).fetchone()[0]
+    assert hw_count_before == 1
+
+    result = repo.delete_schedule("SCHED-1")
+    assert result is True
+    assert repo.schedule_exists("SCHED-1") is False
+
+    # Verify hour windows deleted via ON DELETE CASCADE
+    hw_count_after = repo.conn.execute(
+        "SELECT COUNT(*) FROM hour_windows WHERE schedule_id = 'SCHED-1'"
+    ).fetchone()[0]
+    assert hw_count_after == 0
+
+
+def test_delete_schedule_non_existent(repo: DatabaseRepository) -> None:
+    result = repo.delete_schedule("NON-EXISTENT-SCHED")
+    assert result is False
+
+
+def test_delete_schedule_referenced_by_task_raises_integrity_error(
+    repo: DatabaseRepository,
+) -> None:
+    mail_config, work_schedules = _config("SCHED-REF", "TASK-REF")
+    repo.import_configuration(mail_config, work_schedules)
+
+    assert repo.schedule_exists("SCHED-REF") is True
+    assert len(repo.get_mail_tasks()) == 1
+
+    with pytest.raises(pytest.importorskip("sqlite3").IntegrityError):
+        repo.delete_schedule("SCHED-REF")
