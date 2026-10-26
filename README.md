@@ -64,6 +64,8 @@ Supported environment settings defined in `mail_cadence.models.Settings`:
 | `MAIL_CADENCE_TEMPLATE_DIR` | `.` | Directory that task template paths are resolved against (same as `--template-dir`). Built-in templates are referenced as `builtin:<name>`, e.g. `builtin:daily_dispatch.html.j2` |
 | `ADMIN_USER` | *None* | Web panel username. Without it (and `ADMIN_PASSWORD`) the panel refuses access unless started with `serve --insecure-no-auth` on a loopback host |
 | `ADMIN_PASSWORD` | *None* | Web panel password |
+| `ADMIN_LOGIN_MAX_FAILURES` | `10` | Wrong web panel logins allowed per client IP within the window; further attempts get `429 Too Many Requests` |
+| `ADMIN_LOGIN_WINDOW_SECONDS` | `900` | Length of that window (sliding) in seconds |
 
 ### Database Upgrades
 
@@ -170,8 +172,10 @@ mail-cadence serve --host 127.0.0.1 --port 8000
 ```
 
 - Set `ADMIN_USER` and `ADMIN_PASSWORD`; without them every request gets `503`. `--insecure-no-auth` turns this off, and only works with a loopback `--host`.
+- After `ADMIN_LOGIN_MAX_FAILURES` wrong logins (default 10) within `ADMIN_LOGIN_WINDOW_SECONDS` (default 15 minutes), a client IP gets `429` with a `Retry-After` header, even with the correct password, until its oldest failure is older than the window. Each block is logged as a warning (`Too many failed admin logins from <ip>`), which tools like fail2ban can watch. The counters live in memory, so they reset when the panel restarts.
 - State-changing requests (`POST`, `PUT`, `DELETE`, ...) from other sites are rejected with `403`. The check compares the browser's `Origin` header with the request's `Host` header.
-- **Behind a reverse proxy** (nginx, Traefik, Caddy, ...), the proxy must pass the original `Host` header through, otherwise every save or dispatch fails with `403 Cross-site request rejected.` For nginx: `proxy_set_header Host $host;` (Caddy and Traefik keep it by default). Serve the panel over HTTPS, because Basic Auth sends the password with every request.
+- The panel sends a strict `Content-Security-Policy` and other security headers, and loads no files from CDNs: scripts, styles and fonts are served by the app itself, so it also works without internet access. The template preview opens in a sandbox where scripts in a template cannot run.
+- **Behind a reverse proxy** (nginx, Traefik, Caddy, ...), the proxy must pass the original `Host` header through, otherwise every save or dispatch fails with `403 Cross-site request rejected.` For nginx: `proxy_set_header Host $host;` (Caddy and Traefik keep it by default). The proxy must also send `X-Forwarded-For`: uvicorn uses it as the client IP only for proxies on `127.0.0.1`/`::1`, or those listed in the `FORWARDED_ALLOW_IPS` environment variable (e.g. `FORWARDED_ALLOW_IPS=10.0.0.5`). Otherwise every visitor appears as the proxy's IP, and the login limit blocks everyone at once. Serve the panel over HTTPS, because Basic Auth sends the password with every request.
 
 ## Development & Quality Gates
 
@@ -198,7 +202,12 @@ make quality-gate
 
 # Build the wheel and smoke-test it in a clean virtual environment
 make smoke-test
+
+# Rebuild the web panel CSS/JS/fonts after changing templates (needs Node.js)
+make assets
 ```
+
+The web panel's browser assets in `src/mail_cadence/web_static/` are committed, so installing or packaging `mail-cadence` never needs Node.js. After changing Tailwind classes in templates, icons (`<i data-lucide="...">`) or the versions in `frontend/package.json`, run `make assets` and commit the result; CI checks that the committed files match a fresh build.
 
 CI runs the same checks on every push and pull request, plus tests on Linux and Windows with Python 3.12–3.14, a test run with the lowest dependency versions allowed by `pyproject.toml`, and the smoke test against the built wheel and sdist. Releases publish to PyPI only when all of that passes and the release tag matches the `pyproject.toml` version; pre-releases go to TestPyPI.
 

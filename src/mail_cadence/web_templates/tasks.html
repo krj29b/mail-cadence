@@ -1,5 +1,6 @@
 {% extends "layout.html" %}
 {% block title %}Tasks - MailCadence Admin{% endblock %}
+{% block scripts %}<script src="/static/tasks.js?v={{ asset_version }}" defer></script>{% endblock %}
 {% block content %}
 <!-- Page Header -->
 <div class="flex items-center justify-between pb-2 border-b border-slate-800">
@@ -35,11 +36,11 @@
         <i data-lucide="plus-circle" class="w-4 h-4 text-indigo-400"></i>
         <span class="text-sm font-semibold text-white">Create / Update Task</span>
       </div>
-      <div class="flex items-center gap-3" onclick="event.stopPropagation()">
+      <div class="flex items-center gap-3">
         {% if tasks %}
         <div class="flex items-center gap-2 text-xs">
           <label for="quick-load-task" class="text-slate-400 font-medium hidden sm:inline">Load Existing:</label>
-          <select id="quick-load-task" onchange="loadTaskToEdit(this.value)"
+          <select id="quick-load-task" data-on-change="load-task"
                   class="bg-slate-950 border border-slate-800 rounded-lg px-2 py-1 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono">
             <option value="">-- Select Task to Edit --</option>
             {% for t in tasks %}
@@ -117,7 +118,7 @@
                      value="{{ edit_task.body_template.template_path if edit_task else '' }}"
                      class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 font-mono">
               {% if available_templates %}
-              <select id="quick-template-select" onchange="if(this.value){ document.getElementById('body_template_path').value = this.value; }"
+              <select id="quick-template-select" data-on-change="pick-template"
                       class="bg-slate-950 border border-slate-800 rounded-lg px-2 py-2 text-xs text-slate-300 focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono shrink-0">
                 <option value="">Quick Pick...</option>
                 {% for tpl in available_templates %}
@@ -156,7 +157,7 @@
         <div class="space-y-2 pt-1 border-t border-slate-800/80">
           <div class="flex items-center justify-between">
             <label class="block text-xs font-medium text-slate-300">Context Variables</label>
-            <button type="button" onclick="addContextVarRow()"
+            <button type="button" data-on-click="add-context-var"
                     class="inline-flex items-center gap-1 text-xs font-medium text-indigo-400 hover:text-indigo-300 transition-colors">
               <i data-lucide="plus-circle" class="w-3.5 h-3.5"></i>
               <span>Add Variable</span>
@@ -170,7 +171,7 @@
           <details class="text-xs text-slate-500 cursor-pointer pt-1">
             <summary class="hover:text-slate-400 select-none">Raw JSON Sync Field</summary>
             <textarea id="context_variables" name="context_variables" rows="2" placeholder='[{"name": "company", "value": "Acme Corp"}]'
-                      class="w-full mt-1 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 font-mono">{% if edit_task %}[{% for v in edit_task.context_variables %}{"name": "{{ v.name }}", "value": "{{ v.value }}"}{% if not loop.last %}, {% endif %}{% endfor %}]{% endif %}</textarea>
+                      class="w-full mt-1 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 font-mono">{% if edit_task %}{{ edit_task.model_dump(mode='json')['context_variables'] | tojson }}{% endif %}</textarea>
           </details>
         </div>
 
@@ -179,7 +180,7 @@
             <i data-lucide="save" class="w-4 h-4"></i>
             <span>Save Task</span>
           </button>
-          <button type="button" onclick="resetTaskForm()" class="inline-flex items-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium px-4 py-2 rounded-lg transition-colors border border-slate-700">
+          <button type="button" data-on-click="reset-task-form" class="inline-flex items-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium px-4 py-2 rounded-lg transition-colors border border-slate-700">
             <i data-lucide="rotate-ccw" class="w-4 h-4"></i>
             <span>Reset / New Task</span>
           </button>
@@ -200,7 +201,7 @@
     {% if tasks %}
     <div class="relative w-full sm:w-72">
       <i data-lucide="search" class="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2"></i>
-      <input type="text" id="task-search-input" onkeyup="filterTasksTable()" placeholder="Search tasks by ID, subject, recipient, or schedule..."
+      <input type="text" id="task-search-input" data-on-input="filter-tasks" placeholder="Search tasks by ID, subject, recipient, or schedule..."
              class="w-full bg-slate-950 border border-slate-800 rounded-lg pl-9 pr-3 py-1.5 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-indigo-500">
     </div>
     {% endif %}
@@ -224,7 +225,7 @@
       <tbody class="divide-y divide-slate-800/50 text-slate-300">
         {% for task in tasks %}
         {% set status_info = task_statuses.get(task.id, {}) if task_statuses else {} %}
-        <tr id="task-row-{{ task.id }}" class="task-table-row hover:bg-slate-800/40 transition-colors">
+        <tr class="task-table-row hover:bg-slate-800/40 transition-colors">
           <td class="py-3 px-4 font-mono font-medium text-white">
             <div class="flex items-center gap-2">
               <span class="task-id-text">{{ task.id }}</span>
@@ -289,12 +290,12 @@
           </td>
           <td class="py-3 px-4 text-right whitespace-nowrap">
             <div class="inline-flex items-center gap-1.5">
-              <button type="button" onclick="loadTaskToEdit('{{ task.id }}')"
+              <button type="button" data-on-click="load-task" data-task-id="{{ task.id }}"
                       class="inline-flex items-center gap-1 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 px-2 py-1 rounded text-xs transition-colors">
                 <i data-lucide="edit-3" class="w-3 h-3 text-indigo-400"></i>
                 <span>Edit</span>
               </button>
-              <button hx-post="/tasks/{{ task.id }}/run"
+              <button hx-post="/tasks/{{ task.id | urlencode }}/run"
                       hx-target="#messages"
                       hx-swap="innerHTML"
                       class="inline-flex items-center gap-1 bg-slate-800 hover:bg-slate-700 text-indigo-400 border border-slate-700 px-2 py-1 rounded text-xs transition-colors">
@@ -302,7 +303,7 @@
                 <span>Run</span>
               </button>
               {% if status_info.get('status_key') == 'dispatched_in_window' %}
-              <button hx-post="/tasks/{{ task.id }}/reset-window"
+              <button hx-post="/tasks/{{ task.id | urlencode }}/reset-window"
                       hx-target="body"
                       hx-swap="outerHTML"
                       hx-confirm="Allow task '{{ task.id }}' to be sent again in the current window?"
@@ -312,13 +313,13 @@
                 <span>Allow Resend</span>
               </button>
               {% endif %}
-              <a href="/tasks/{{ task.id }}/preview" target="_blank"
+              <a href="/tasks/{{ task.id | urlencode }}/preview" rel="noopener noreferrer" target="_blank"
                  class="inline-flex items-center gap-1 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 px-2 py-1 rounded text-xs transition-colors">
                 <i data-lucide="eye" class="w-3 h-3"></i>
                 <span>Preview</span>
               </a>
-              <button hx-delete="/tasks/{{ task.id }}"
-                      hx-target="#task-row-{{ task.id }}"
+              <button hx-delete="/tasks/{{ task.id | urlencode }}"
+                      hx-target="closest tr"
                       hx-swap="outerHTML"
                       class="inline-flex items-center gap-1 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 px-2 py-1 rounded text-xs transition-colors">
                 <i data-lucide="trash-2" class="w-3 h-3"></i>
@@ -340,161 +341,4 @@
   {% endif %}
 </div>
 
-<script>
-function addContextVarRow(key = '', value = '', skipSync = false) {
-  const container = document.getElementById('ctx-vars-container');
-  const rowId = 'ctx-row-' + Date.now() + '-' + Math.floor(Math.random() * 1000);
-  const rowDiv = document.createElement('div');
-  rowDiv.id = rowId;
-  rowDiv.className = 'flex items-center gap-2 ctx-var-row';
-  rowDiv.innerHTML = `
-    <input type="text" placeholder="Key (e.g. company)" oninput="syncContextVarsJson()"
-           class="ctx-key w-1/3 bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono">
-    <input type="text" placeholder="Value (e.g. Acme Corp)" oninput="syncContextVarsJson()"
-           class="ctx-val w-2/3 bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono">
-    <button type="button" onclick="removeContextVarRow('${rowId}')" class="p-1 text-slate-500 hover:text-rose-400 transition-colors">
-      <i data-lucide="x" class="w-4 h-4"></i>
-    </button>
-  `;
-  rowDiv.querySelector('.ctx-key').value = key;
-  rowDiv.querySelector('.ctx-val').value = value;
-  container.appendChild(rowDiv);
-  if (window.lucide) { lucide.createIcons(); }
-  if (!skipSync) { syncContextVarsJson(); }
-}
-
-function removeContextVarRow(rowId) {
-  const elem = document.getElementById(rowId);
-  if (elem) {
-    elem.remove();
-    syncContextVarsJson();
-  }
-}
-
-function syncContextVarsJson() {
-  const rows = document.querySelectorAll('.ctx-var-row');
-  const vars = [];
-  rows.forEach(r => {
-    const k = r.querySelector('.ctx-key').value.trim();
-    const v = r.querySelector('.ctx-val').value;
-    if (k) {
-      vars.push({ name: k, value: v });
-    }
-  });
-  const jsonField = document.getElementById('context_variables');
-  if (jsonField) {
-    jsonField.value = JSON.stringify(vars);
-  }
-}
-
-function renderContextVarsFromField() {
-  const container = document.getElementById('ctx-vars-container');
-  container.innerHTML = '';
-  const jsonField = document.getElementById('context_variables');
-  if (!jsonField || !jsonField.value.trim()) return;
-  try {
-    const data = JSON.parse(jsonField.value);
-    if (Array.isArray(data)) {
-      data.forEach(item => {
-        if (item.name) {
-          addContextVarRow(item.name, item.value || '', true);
-        }
-      });
-      syncContextVarsJson();
-    }
-  } catch(e) {
-    // If not valid JSON, leave container empty
-  }
-}
-
-async function loadTaskToEdit(taskId) {
-  if (!taskId) return;
-  try {
-    const resp = await fetch('/api/tasks/' + encodeURIComponent(taskId));
-    if (!resp.ok) {
-      alert('Failed to fetch task data: ' + resp.statusText);
-      return;
-    }
-    const task = await resp.json();
-
-    document.getElementById('id').value = task.id || '';
-    document.getElementById('schedule_ref').value = task.schedule_ref || '';
-    document.getElementById('sender').value = task.sender || '';
-    document.getElementById('priority').value = task.priority || 'normal';
-    document.getElementById('max_retries').value = task.max_retries !== undefined ? task.max_retries : 3;
-    document.getElementById('subject').value = task.subject || '';
-    document.getElementById('body_format').value = task.body_format || (task.body_template ? task.body_template.format : 'html');
-    document.getElementById('body_template_path').value = task.body_template_path || (task.body_template ? task.body_template.template_path : '');
-
-    const tplSelect = document.getElementById('quick-template-select');
-    if (tplSelect) { tplSelect.value = ''; }
-
-    const toArr = task.to || (task.recipients ? task.recipients.to : []);
-    const ccArr = task.cc || (task.recipients ? task.recipients.cc : []);
-    const bccArr = task.bcc || (task.recipients ? task.recipients.bcc : []);
-
-    document.getElementById('to').value = Array.isArray(toArr) ? toArr.join(', ') : toArr;
-    document.getElementById('cc').value = Array.isArray(ccArr) ? ccArr.join(', ') : ccArr;
-    document.getElementById('bcc').value = Array.isArray(bccArr) ? bccArr.join(', ') : bccArr;
-
-    const ctxVars = task.context_variables || [];
-    document.getElementById('context_variables').value = JSON.stringify(ctxVars);
-    renderContextVarsFromField();
-
-    const quickSelect = document.getElementById('quick-load-task');
-    if (quickSelect) { quickSelect.value = taskId; }
-
-    const formDetails = document.getElementById('task-form-details');
-    if (formDetails) {
-      formDetails.open = true;
-      formDetails.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }
-  } catch (err) {
-    console.error('Error loading task:', err);
-  }
-}
-
-function resetTaskForm() {
-  document.getElementById('id').value = '';
-  document.getElementById('subject').value = '';
-  document.getElementById('body_template_path').value = '';
-  document.getElementById('to').value = '';
-  document.getElementById('cc').value = '';
-  document.getElementById('bcc').value = '';
-  document.getElementById('priority').value = 'normal';
-  document.getElementById('body_format').value = 'html';
-  document.getElementById('max_retries').value = '3';
-  document.getElementById('context_variables').value = '';
-  document.getElementById('ctx-vars-container').innerHTML = '';
-
-  const quickSelect = document.getElementById('quick-load-task');
-  if (quickSelect) { quickSelect.value = ''; }
-  const tplSelect = document.getElementById('quick-template-select');
-  if (tplSelect) { tplSelect.value = ''; }
-}
-
-function filterTasksTable() {
-  const input = document.getElementById('task-search-input');
-  if (!input) return;
-  const filter = input.value.toLowerCase().trim();
-  const rows = document.querySelectorAll('.task-table-row');
-
-  rows.forEach(row => {
-    const taskId = row.querySelector('.task-id-text')?.textContent.toLowerCase() || '';
-    const schedule = row.querySelector('.task-schedule-text')?.textContent.toLowerCase() || '';
-    const subject = row.querySelector('.task-subject-text')?.textContent.toLowerCase() || '';
-    const recipients = row.querySelector('.task-recipients-text')?.textContent.toLowerCase() || '';
-
-    if (taskId.includes(filter) || schedule.includes(filter) || subject.includes(filter) || recipients.includes(filter)) {
-      row.style.display = '';
-    } else {
-      row.style.display = 'none';
-    }
-  });
-}
-
-document.addEventListener('DOMContentLoaded', () => {
-  renderContextVarsFromField();
-});
-</script>
 {% endblock %}

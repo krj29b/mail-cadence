@@ -5,118 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{% block title %}MailCadence Admin{% endblock %}</title>
 
-  <!-- Google Fonts: Inter & JetBrains Mono -->
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-
-  <!-- Tailwind CSS Play CDN & Config -->
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script>
-    tailwind.config = {
-      darkMode: 'class',
-      theme: {
-        extend: {
-          fontFamily: {
-            sans: ['Inter', 'sans-serif'],
-            mono: ['JetBrains Mono', 'monospace'],
-          },
-        },
-      },
-    }
-  </script>
-
-  <!-- HTMX & Lucide Icons -->
-  <script src="https://unpkg.com/htmx.org@2.0.2"></script>
-  <script src="https://unpkg.com/lucide@latest"></script>
-
-  <style>
-    /* HTMX Indicator Custom Progress & Spinner Styling */
-    .htmx-indicator {
-      display: none;
-      opacity: 0;
-      transition: opacity 0.2s ease-in-out;
-    }
-    .htmx-request .htmx-indicator,
-    .htmx-request.htmx-indicator {
-      display: inline-flex;
-      opacity: 1;
-    }
-
-    /* Global Alert Banners & Semantic Badges for backward compatibility */
-    .alert-success {
-      background-color: rgba(16, 185, 129, 0.1);
-      color: #34d399;
-      border: 1px solid rgba(16, 185, 129, 0.2);
-      padding: 0.75rem 1rem;
-      border-radius: 0.5rem;
-      font-size: 0.875rem;
-      font-weight: 500;
-      margin-bottom: 1rem;
-    }
-    .alert-error {
-      background-color: rgba(244, 63, 94, 0.1);
-      color: #fb7185;
-      border: 1px solid rgba(244, 63, 94, 0.2);
-      padding: 0.75rem 1rem;
-      border-radius: 0.5rem;
-      font-size: 0.875rem;
-      font-weight: 500;
-      margin-bottom: 1rem;
-    }
-    .badge-success {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.375rem;
-      background-color: rgba(16, 185, 129, 0.1);
-      color: #34d399;
-      border: 1px solid rgba(16, 185, 129, 0.2);
-      padding: 0.125rem 0.5rem;
-      border-radius: 9999px;
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 0.75rem;
-      font-weight: 500;
-    }
-    .badge-failed {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.375rem;
-      background-color: rgba(244, 63, 94, 0.1);
-      color: #fb7185;
-      border: 1px solid rgba(244, 63, 94, 0.2);
-      padding: 0.125rem 0.5rem;
-      border-radius: 9999px;
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 0.75rem;
-      font-weight: 500;
-    }
-    .badge-partial {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.375rem;
-      background-color: rgba(245, 158, 11, 0.1);
-      color: #fbbf24;
-      border: 1px solid rgba(245, 158, 11, 0.2);
-      padding: 0.125rem 0.5rem;
-      border-radius: 9999px;
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 0.75rem;
-      font-weight: 500;
-    }
-    .badge-skipped {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.375rem;
-      background-color: rgba(100, 116, 139, 0.1);
-      color: #94a3b8;
-      border: 1px solid rgba(51, 65, 85, 0.5);
-      padding: 0.125rem 0.5rem;
-      border-radius: 9999px;
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 0.75rem;
-      font-weight: 500;
-    }
-  </style>
+  <!-- All assets are served by the app (no CDNs) so the panel works under a strict
+       Content-Security-Policy. Rebuild them with `make assets`. -->
+  <meta name="htmx-config" content='{"includeIndicatorStyles": false, "allowEval": false, "allowScriptTags": false}'>
+  <link rel="stylesheet" href="/static/app.css?v={{ asset_version }}">
+  <script src="/static/vendor/htmx.min.js?v={{ asset_version }}" defer></script>
+  <script src="/static/icons.js?v={{ asset_version }}" defer></script>
+  <script src="/static/app.js?v={{ asset_version }}" defer></script>
+  {% block scripts %}{% endblock %}
 </head>
 <body class="h-full bg-slate-950 text-slate-100 font-sans antialiased selection:bg-indigo-500/30 selection:text-indigo-200">
   <div class="flex h-screen overflow-hidden">
@@ -131,7 +27,7 @@
             </div>
             <span class="font-semibold tracking-tight text-white text-base">MailCadence</span>
           </div>
-          <span class="font-mono text-xs bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 px-2 py-0.5 rounded-full">v0.7.0</span>
+          <span class="font-mono text-xs bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 px-2 py-0.5 rounded-full">v{{ asset_version }}</span>
         </div>
 
         <!-- Navigation Links -->
@@ -175,17 +71,5 @@
     </main>
   </div>
 
-  <script>
-    document.addEventListener('DOMContentLoaded', () => {
-      if (window.lucide) {
-        lucide.createIcons();
-      }
-    });
-    document.body.addEventListener('htmx:afterSwap', () => {
-      if (window.lucide) {
-        lucide.createIcons();
-      }
-    });
-  </script>
 </body>
 </html>

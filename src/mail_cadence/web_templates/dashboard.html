@@ -140,7 +140,7 @@
       </select>
 
       <!-- Reset Filters Button -->
-      <a href="/" hx-get="/dashboard/logs?page=1&page_size=25" hx-target="#logs-table-container" onclick="document.getElementById('logs-filter-form').reset();" class="inline-flex items-center gap-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs px-2.5 py-1.5 rounded-lg transition-colors cursor-pointer font-mono">
+      <a href="/" hx-get="/dashboard/logs?page=1&page_size=25" hx-target="#logs-table-container" data-on-click="reset-form" data-form="logs-filter-form" class="inline-flex items-center gap-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs px-2.5 py-1.5 rounded-lg transition-colors cursor-pointer font-mono">
         <i data-lucide="rotate-ccw" class="w-3 h-3"></i>
         <span>Reset</span>
       </a>

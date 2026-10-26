@@ -1,8 +1,9 @@
 import json
+import logging
 import math
 import secrets
 import sqlite3
-from collections.abc import Generator
+from collections.abc import Awaitable, Callable, Generator
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -15,12 +16,14 @@ import jinja2
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
 
 from mail_cadence import __version__
 from mail_cadence.database import get_connection, init_db
 from mail_cadence.dispatch_jobs import DispatchBusyError, DispatchJob, DispatchRunner, JobWork
+from mail_cadence.login_throttle import LoginThrottle
 from mail_cadence.mailer import (
     INTERNAL_TEMPLATES,
     TemplateRenderer,
@@ -41,6 +44,8 @@ from mail_cadence.models import (
 from mail_cadence.pipeline import DispatchOptions, dispatch_single_task, run_dispatch
 from mail_cadence.repository import DatabaseRepository
 from mail_cadence.scheduler import TaskScheduler
+
+logger = logging.getLogger(__name__)
 
 COMMON_TIMEZONES: tuple[str, ...] = (
     "UTC",
@@ -115,17 +120,46 @@ def verify_credentials(
         headers={"WWW-Authenticate": "Basic"},
     )
     if not credentials:
+        # The browser's first request has no credentials; it is not a failed login.
         raise unauthorized
-    user_ok = secrets.compare_digest(
-        credentials.username.encode("utf-8"),
-        admin_user.encode("utf-8"),
-    )
-    pass_ok = secrets.compare_digest(
-        credentials.password.encode("utf-8"),
-        admin_password.encode("utf-8"),
-    )
-    if not (user_ok and pass_ok):
+
+    throttle: LoginThrottle = request.app.state.login_throttle
+    client = _client_address(request)
+    # Checked before the password, so a blocked client cannot learn if a guess was right.
+    _raise_if_throttled(throttle, client)
+    if not _credentials_match(credentials, admin_user, admin_password):
+        if throttle.record_failure(client):
+            logger.warning(
+                f"Too many failed admin logins from {client}: blocked for up to "
+                f"{throttle.window_seconds:.0f}s"
+            )
         raise unauthorized
+    throttle.reset(client)
+
+
+def _client_address(request: Request) -> str:
+    # Behind a reverse proxy uvicorn sets this from X-Forwarded-For, but only for proxies
+    # listed in FORWARDED_ALLOW_IPS (default: 127.0.0.1 and ::1).
+    return request.client.host if request.client else "unknown"
+
+
+def _raise_if_throttled(throttle: LoginThrottle, client: str) -> None:
+    retry_after = throttle.retry_after(client)
+    if retry_after is not None:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many failed login attempts. Try again later.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
+
+def _credentials_match(
+    credentials: HTTPBasicCredentials, admin_user: str, admin_password: str
+) -> bool:
+    # Both comparisons always run (constant time, no short-circuit on the user name).
+    user_ok = secrets.compare_digest(credentials.username.encode(), admin_user.encode())
+    pass_ok = secrets.compare_digest(credentials.password.encode(), admin_password.encode())
+    return user_ok and pass_ok
 
 
 _UNSAFE_METHODS: frozenset[str] = frozenset({"POST", "PUT", "PATCH", "DELETE"})
@@ -330,7 +364,47 @@ def _build_logs_pagination_context(repo: DatabaseRepository, filters: LogFilters
 
 
 PACKAGE_TEMPLATES_DIR = Path(__file__).parent / "web_templates"
+PACKAGE_STATIC_DIR = Path(__file__).parent / "web_static"
+STATIC_PREFIX = "/static"
 templates = Jinja2Templates(directory=str(PACKAGE_TEMPLATES_DIR))
+templates.env.globals["asset_version"] = __version__
+
+# Every panel response. Scripts, styles and fonts come only from /static: no inline
+# JavaScript, no event-handler attributes, no CDNs.
+CONTENT_SECURITY_POLICY = (
+    "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
+    "font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; "
+    "form-action 'self'; frame-ancestors 'none'"
+)
+# Rendered task templates (preview) run in a sandbox with an opaque origin: no scripts,
+# no access to the panel. Inline styles and remote images are allowed because emails use them.
+PREVIEW_CONTENT_SECURITY_POLICY = (
+    "sandbox; default-src 'none'; style-src 'unsafe-inline' https:; "
+    "img-src data: https:; font-src data: https:; frame-ancestors 'none'"
+)
+SECURITY_HEADERS: dict[str, str] = {
+    "Content-Security-Policy": CONTENT_SECURITY_POLICY,
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    # Not "no-referrer": with it browsers send "Origin: null" on form posts, which the
+    # same-origin check (correctly) rejects.
+    "Referrer-Policy": "same-origin",
+    "Cross-Origin-Opener-Policy": "same-origin",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=()",
+}
+
+
+async def add_security_headers(
+    request: Request, call_next: Callable[[Request], Awaitable[Response]]
+) -> Response:
+    """Set security headers on every response; a route may set its own CSP (preview)."""
+    response = await call_next(request)
+    for name, value in SECURITY_HEADERS.items():
+        response.headers.setdefault(name, value)
+    # Static assets are revalidated (ETag); pages and API data are never stored.
+    is_static = request.url.path.startswith(STATIC_PREFIX + "/")
+    response.headers.setdefault("Cache-Control", "no-cache" if is_static else "no-store")
+    return response
 
 
 def format_utc_timestamp(value: object) -> str:
@@ -616,9 +690,10 @@ def preview_task(
             detail=f"Template error: {exc}",
         ) from exc
 
+    headers = {"Content-Security-Policy": PREVIEW_CONTENT_SECURITY_POLICY}
     if task.body_template.format.lower() == "html":
-        return HTMLResponse(content=rendered)
-    return Response(content=rendered, media_type="text/plain")
+        return HTMLResponse(content=rendered, headers=headers)
+    return Response(content=rendered, media_type="text/plain", headers=headers)
 
 
 @router.get("/api/schedules/{schedule_id}", response_class=JSONResponse)
@@ -940,5 +1015,12 @@ def create_app(
     app.state.custom_settings = settings
     app.state.settings = settings or Settings.load()
     app.state.dispatch_runner = DispatchRunner()
+    app.state.login_throttle = LoginThrottle(
+        max_failures=app.state.settings.admin_login_max_failures,
+        window_seconds=app.state.settings.admin_login_window_seconds,
+    )
+    app.middleware("http")(add_security_headers)
+    # Static assets are public (no credentials needed): they hold no data.
+    app.mount(STATIC_PREFIX, StaticFiles(directory=PACKAGE_STATIC_DIR), name="static")
     app.include_router(router)
     return app

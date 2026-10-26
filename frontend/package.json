@@ -1,0 +1,16 @@
+{
+  "name": "mail-cadence-frontend",
+  "private": true,
+  "description": "Build-time only: Tailwind CSS build and vendored browser assets for the web panel. Run `make assets`.",
+  "license": "MIT",
+  "scripts": {
+    "build": "node build.mjs && tailwindcss -c tailwind.config.js -i app.src.css -o ../src/mail_cadence/web_static/app.css --minify"
+  },
+  "devDependencies": {
+    "@fontsource-variable/inter": "5.3.0",
+    "@fontsource-variable/jetbrains-mono": "5.3.0",
+    "htmx.org": "2.0.11",
+    "lucide": "1.61.0",
+    "tailwindcss": "3.4.19"
+  }
+}

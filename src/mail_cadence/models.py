@@ -282,6 +282,9 @@ class Settings(BaseSettings):
 
     admin_user: str | None = None
     admin_password: str | None = None
+    # Wrong web panel logins allowed per client IP within the window (then 429).
+    admin_login_max_failures: int = Field(default=10, ge=1)
+    admin_login_window_seconds: float = Field(default=900.0, gt=0)
 
     @classmethod
     def load(cls) -> Self:

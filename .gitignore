@@ -114,3 +114,6 @@ config/testmail/*
 uv.lock
 _install.sh
 _plans/
+
+# Web panel asset build (make assets)
+frontend/node_modules/

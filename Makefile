@@ -1,5 +1,5 @@
 # Recipes must be indented with tabs.
-.PHONY: install test lint dead-code complexity audit quality-gate smoke-test run-dry clean
+.PHONY: install test lint dead-code complexity audit quality-gate smoke-test assets run-dry clean
 
 PYTHON ?= python
 CODE_DIRS = src tests scripts
@@ -37,6 +37,11 @@ smoke-test:
 	$(PYTHON) -m venv .smoke-venv
 	.smoke-venv/bin/python -m pip install -q dist/*.whl httpx
 	cd /tmp && $(CURDIR)/.smoke-venv/bin/python -I $(CURDIR)/scripts/smoke_test_wheel.py --repo $(CURDIR)
+
+# Rebuild the web panel assets in src/mail_cadence/web_static (needs Node.js; the result
+# is committed, so installing or packaging mail-cadence never needs Node).
+assets:
+	cd frontend && npm ci --ignore-scripts --no-audit --no-fund && npm run build
 
 run-dry:
 	$(PYTHON) -m mail_cadence.cli \
