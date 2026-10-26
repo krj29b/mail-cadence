@@ -1,29 +1,42 @@
-# Note: Ensure tabs are preserved if copying manually
-.PHONY: install test lint dead-code complexity audit quality-gate run-dry clean
+# Recipes must be indented with tabs.
+.PHONY: install test lint dead-code complexity audit quality-gate smoke-test run-dry clean
 
 PYTHON ?= python
-PYTEST ?= $(PYTHON) -m pytest
+CODE_DIRS = src tests scripts
+COV_MIN ?= 90
 
 install:
 	$(PYTHON) -m pip install -e ".[dev]"
 
 test:
-	PYTHONPATH=src $(PYTEST) --cov=src/mail_cadence --cov-report=term-missing
+	$(PYTHON) -m pytest --cov=mail_cadence --cov-report=term-missing --cov-fail-under=$(COV_MIN)
 
 lint:
-	ruff check src/ tests/
-	mypy src/ tests/
+	$(PYTHON) -m ruff check $(CODE_DIRS)
+	$(PYTHON) -m ruff format --check $(CODE_DIRS)
+	$(PYTHON) -m mypy $(CODE_DIRS)
 
 dead-code:
-	vulture src/ --min-confidence 80
+	$(PYTHON) -m vulture src
 
+# radon only reports; xenon fails the build when anything is worse than B.
 complexity:
-	radon cc src/ -a -nb --total-average
+	$(PYTHON) -m radon cc src -a -nb --total-average
+	$(PYTHON) -m xenon --max-absolute B --max-modules B --max-average B src
 
 audit:
-	pip-audit
+	$(PYTHON) -m pip_audit --skip-editable
 
 quality-gate: lint dead-code complexity audit test
+
+# Build the distributions and smoke-test the wheel in a throwaway virtual environment
+# (Linux/macOS paths; CI runs the same script on Windows too).
+smoke-test:
+	rm -rf dist .smoke-venv
+	$(PYTHON) -m build
+	$(PYTHON) -m venv .smoke-venv
+	.smoke-venv/bin/python -m pip install -q dist/*.whl httpx
+	cd /tmp && $(CURDIR)/.smoke-venv/bin/python -I $(CURDIR)/scripts/smoke_test_wheel.py --repo $(CURDIR)
 
 run-dry:
 	$(PYTHON) -m mail_cadence.cli \
@@ -32,4 +45,4 @@ run-dry:
 		--dry-run
 
 clean:
-	rm -rf .pytest_cache .mypy_cache .ruff_cache .coverage dist build *.egg-info
+	rm -rf .pytest_cache .mypy_cache .ruff_cache .coverage dist build *.egg-info .smoke-venv

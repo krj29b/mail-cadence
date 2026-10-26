@@ -4,12 +4,14 @@ This document defines absolute engineering rules for the `mail-cadence` project.
 
 ## 1. Mandatory Quality Gates
 Before declaring code readiness, run all of the following tools. None of them may return errors or warnings:
-1. `pytest` – all unit and integration tests must pass.
-2. `mypy src tests` – full compliance with `strict = true` mode.
-3. `ruff check src tests` and `ruff format --check src tests` – zero linter rule violations (including the `C901 <= 10` complexity limit).
+1. `pytest` – all unit and integration tests must pass, with at least 90% coverage (`make test`).
+2. `mypy src tests scripts` – full compliance with `strict = true` mode.
+3. `ruff check src tests scripts` and `ruff format --check src tests scripts` – zero linter rule violations (including the `C901 <= 10` complexity limit).
 4. `vulture src` – zero dead code, unused private methods, and local variables.
-5. `radon cc src -a -nb` – no function or method may have a complexity rating worse than `B`.
-6. `pip-audit` – no known vulnerabilities in dependencies.
+5. `xenon --max-absolute B --max-modules B --max-average B src` – no function or method may have a complexity rating worse than `B` (`radon cc src -a -nb` only reports and never fails).
+6. `pip-audit --skip-editable` – no known vulnerabilities in dependencies.
+
+`make quality-gate` runs all of them; CI (`.github/workflows/publish.yml`) runs the same targets, the tests on Linux and Windows with Python 3.12–3.14 and with the lowest declared dependency versions, and `scripts/smoke_test_wheel.py` against the built wheel and sdist. When raising a dependency's minimum, keep `pyproject.toml` lower bounds honest: the lowest-versions job installs exactly those.
 
 ## 2. SQLite Database Layer (`database.py`, `repository.py`, `xml_loader.py`)
 * **Ban on nested `with self.conn:` blocks:** In the `sqlite3` library, exiting a `with conn:` block immediately performs a `COMMIT` across the entire connection.

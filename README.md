@@ -195,7 +195,12 @@ make audit
 
 # Run all quality gate checks in sequence
 make quality-gate
+
+# Build the wheel and smoke-test it in a clean virtual environment
+make smoke-test
 ```
+
+CI runs the same checks on every push and pull request, plus tests on Linux and Windows with Python 3.12–3.14, a test run with the lowest dependency versions allowed by `pyproject.toml`, and the smoke test against the built wheel and sdist. Releases publish to PyPI only when all of that passes and the release tag matches the `pyproject.toml` version; pre-releases go to TestPyPI.
 
 ### Acceptance Tests for the Review Fixes
 
