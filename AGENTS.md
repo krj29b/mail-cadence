@@ -59,3 +59,15 @@ Before declaring code readiness, run all of the following tools. None of them ma
 * **Web panel:** Without `ADMIN_USER`/`ADMIN_PASSWORD` the panel refuses access (503) unless started with `serve --insecure-no-auth` on a loopback host. State-changing requests from other origins are rejected (`verify_same_origin`). Failed logins go through `app.state.login_throttle` (`LoginThrottle`): check `retry_after` before comparing credentials, count only wrong credentials (not missing ones), compare user and password with `secrets.compare_digest` without short-circuiting.
 * **Web panel markup (CSP):** No inline `<script>` code, no `on*=` event-handler attributes, no `<style>`/`style=`, no CDN or other external URLs; `tests/test_web_security.py` enforces this. Behaviour goes in `web_static/*.js` via `data-on-<event>="action"` and `MailCadence.register`. Pass server data to JavaScript only through `data-*` attributes or `<script type="application/json">` with `|tojson`, never by interpolating into JavaScript; IDs in URLs use `|urlencode`. Do not relax `web.CONTENT_SECURITY_POLICY` (no `'unsafe-inline'`/`'unsafe-eval'`) or set `Referrer-Policy: no-referrer`. After template, icon or `frontend/` changes run `make assets` and commit `web_static/`.
 * **Secrets and Credentials:** Passwords in `Settings` are `SecretStr`; call `get_secret_value()` only at the point of use (SMTP login, panel login), never log, render or return the value. Do not weaken the unencrypted SMTP login check (`Settings.smtp_auth_blocked`, `InsecureSMTPAuthError`) or disable TLS certificate verification. Never store real passwords or `.env` files in the repository. In tests, use exclusively local mock/sink servers on `127.0.0.1` and dummy domains (`@example.com`, `@localhost`).
+
+## 5. Communication, Documentation & Commit Style (NO EMOJIS)
+- **STRICT ZERO-EMOJI POLICY:** Never use emojis, emoticons, or decorative Unicode symbols (e.g., 🚀, ✨, 🐛, ✅, 💡) in commit messages, Pull Request titles/descriptions, code comments, log messages, CLI output, UI templates, or documentation (`README.md`, `docs/`). Use plain ASCII/UTF-8 text only.
+- **Commit Messages (Conventional Commits):**
+  - Format: `<type>(<scope>): <concise imperative summary>` (e.g., `fix(mailer): enforce RFC 5322 Message-ID domain alignment`).
+  - Allowed types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`, `perf`, `ci`.
+  - Keep the subject line under 72 characters, lowercase after the colon, no trailing period, and zero emojis.
+  - Body text (if needed) must explain *what* changed and *why* in direct, technical prose without marketing buzzwords.
+- **Tone & Generated Text:**
+  - Write dry, precise, senior-level engineering prose.
+  - Do not use promotional language ("seamless", "blazingly fast", "powerful", "game-changer", "robust") or conversational filler in comments, docstrings, or PR descriptions.
+  - In web UI templates (`web_templates/`), use Lucide SVG icons or clean typographic labels—never raw emoji characters.
