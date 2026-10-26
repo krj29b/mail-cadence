@@ -331,7 +331,7 @@ To prevent duplicate dispatches during an active schedule window:
 `TokenBucketRateLimiter` enforces rate limits per minute using `time.monotonic()`:
 
 - **Token Bucket Refill**: Tokens fill continuously at rate `rate_limit_per_min / 60.0` tokens/sec up to capacity `rate_limit_per_min`.
-- **Resource Key Sharing**: `TaskScheduler` groups concurrency semaphores (`asyncio.Semaphore(window.max_concurrency)`) and rate limiters using a composite key: `(schedule_ref, window.start_time, window.end_time)`. All tasks sharing the same schedule window share the exact same semaphore and token bucket instance.
+- **Resource Key Sharing**: The pipeline (`pipeline._partition_eligible_tasks`) groups concurrency semaphores (`asyncio.Semaphore(window.max_concurrency)`) and rate limiters using a composite key: `(schedule_ref, window.start, window.end)`. All tasks sharing the same schedule window share the exact same semaphore and token bucket instance.
 
 ---
 
@@ -351,49 +351,59 @@ sequenceDiagram
     participant SMTP as Remote SMTP Server
     participant Reporter as ReportGenerator
 
-    CLI->>Runner: Execute dispatch pipeline
+    CLI->>Runner: run_dispatch(DispatchOptions, Settings)
+    Runner->>Repo: init_db (column migrations + data fix-ups)
     opt XML Seeding Provided (--tasks-xml / --schedule-xml)
-        Runner->>Repo: save_mail_configuration / save_work_schedules
-        Repo->>DB: Execute UPSERT / REPLACE SQL
+        Runner->>Repo: import_from_xml(mode="upsert")
+        Repo->>DB: import_configuration (single transaction)
     end
 
-    Runner->>Repo: get_mail_tasks() & get_work_schedules()
-    Repo-->>Runner: Return MailTask objects & WorkSchedules
+    Runner->>Repo: get_mail_configuration(), get_work_schedules(), get_task_execution_states()
+    Repo-->>Runner: MailConfiguration, WorkSchedules, last_run / last_status per task
 
-    Runner->>Sched: Evaluate task eligibility & group by priority
-    Sched-->>Runner: Return eligible tasks (HIGH -> NORMAL -> LOW)
-
-    loop For each priority group
-        Runner->>Mailer: dispatch_tasks_concurrently(tasks)
-        par Concurrent Task Dispatch via asyncio.TaskGroup
-            Mailer->>Sched: Acquire Semaphore & RateLimiter Token
-            Mailer->>Mailer: Render Jinja2 Template & Build MIME Email
-
-            loop Retry Loop (Attempt 1 to max_retries)
-                Mailer->>Mailer: Acquire pooled SMTP client (_acquire_smtp_client)
-                Mailer->>SMTP: send_message(mime_msg)
-                alt Success (2xx Response)
-                    SMTP-->>Mailer: 250 OK
-                    Mailer->>Repo: log_execution(status=SUCCESS)
-                else Transient Error (4xx Response / Timeout)
-                    SMTP-->>Mailer: 4xx Error / Connection Error
-                    Mailer->>Mailer: Backoff delay: 0.5 * 2^(attempt - 1)
-                else Permanent Error (5xx Response)
-                    SMTP-->>Mailer: 5xx Error
-                    Mailer->>Repo: log_execution(status=FAILED or PARTIAL)
-                end
-            end
-
-            Mailer->>Repo: update_task_state(last_run, last_status, last_error)
-            Repo->>DB: COMMIT execution_logs & tasks update
+    loop For each task
+        Runner->>Sched: window_status(task, ref_dt, last_run, last_status)
+        alt Eligible (active window, not yet dispatched in it)
+            Runner->>Runner: Reuse or create Semaphore + TokenBucketRateLimiter for (schedule_ref, start, end)
+        else Not eligible
+            Runner->>Repo: log_task_execution(SKIPPED_SCHEDULE)
         end
     end
 
-    Runner->>Reporter: aggregate_summary_report(batch_id)
-    Reporter->>Repo: Query execution_logs for batch_id
-    Repo-->>Reporter: Return batch execution records
-    Reporter->>Mailer: send_report_email(summary_report)
-    Mailer->>SMTP: Send status report email
+    Runner->>Runner: Sort eligible tasks by priority (high, normal, low), then id
+    Note over Runner,Mailer: Priority only sets the start order. All eligible tasks run in one asyncio.TaskGroup, limited per window by the shared Semaphore and rate limiter.
+
+    par One coroutine per eligible task (asyncio.TaskGroup)
+        Runner->>Runner: Acquire window Semaphore
+        Runner->>Mailer: dispatch_task(task, rate_limiter)
+        Mailer->>Mailer: Render Jinja2 template & build EmailMessage
+
+        loop Delivery attempts (1 to max_retries + 1)
+            Mailer->>Mailer: rate_limiter.acquire()
+            Mailer->>Mailer: Acquire SMTP client (_acquire_smtp_client)
+            Mailer->>SMTP: send_message(msg, pending_recipients)
+            alt Success (2xx for all pending recipients)
+                SMTP-->>Mailer: 250 OK
+            else Transient error (4xx / connection error)
+                SMTP-->>Mailer: 4xx Error / Connection Error
+                Mailer->>Mailer: Backoff delay: 0.5 * 2^(attempt - 1), retry 4xx recipients only
+            else Permanent error (5xx)
+                SMTP-->>Mailer: 5xx Error
+                Mailer->>Mailer: Drop 5xx recipients, no retry for them
+            end
+        end
+
+        Mailer-->>Runner: TaskExecutionResult (SUCCESS / PARTIAL / FAILED)
+        Runner->>Repo: log_task_execution(result, batch_id, dry_run)
+        Repo->>DB: INSERT execution_logs (+ UPDATE tasks state unless dry run)
+    end
+
+    Runner->>Reporter: aggregate_summary_report(results, start, end)
+    Reporter-->>Runner: BatchSummaryReport
+    opt At least one task executed and report_settings configured
+        Runner->>Reporter: send_report(report, report_settings, mailer)
+        Reporter->>SMTP: Send status report email
+    end
     Runner-->>CLI: Complete execution (Exit Code 0, 1, or 2)
 ```
 

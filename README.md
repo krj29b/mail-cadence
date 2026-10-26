@@ -67,7 +67,7 @@ Supported environment settings defined in `mail_cadence.models.Settings`:
 
 ### Task and Schedule Rules
 
-- `priority` is `high`, `normal` or `low`; `max_retries` is `0`–`10`.
+- `priority` is `high`, `normal` or `low`; it only sets the start order (all eligible tasks run concurrently, limited per schedule window). `max_retries` is `0`–`10`.
 - Every task needs at least one recipient (`To`, `Cc` or `Bcc`). Each entry is one address, bare or with a name (`Ann <ann@example.com>`).
 - `schedule_ref` must name an existing schedule.
 - Hour windows include both ends. To cover a whole day use `start="00:00" end="24:00"`; `23:59` leaves the last minute uncovered.
