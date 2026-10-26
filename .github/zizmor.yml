@@ -1,0 +1,8 @@
+# zizmor configuration (CI job "Workflow security (zizmor)" in ci.yml).
+rules:
+  # zizmor recommends GitHub's newer "$/..." self-repository syntax over "./...".
+  # Its concern is step actions loaded from the checked-out workspace at run time; this repo
+  # only uses "./" for job-level reusable workflows (_build.yml), which GitHub resolves from
+  # the caller's commit. actionlint does not support "$/" yet. Revisit when it does.
+  self-repository:
+    disable: true

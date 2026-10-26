@@ -210,7 +210,7 @@ make assets
 
 The web panel's browser assets in `src/mail_cadence/web_static/` are committed, so installing or packaging `mail-cadence` never needs Node.js. After changing Tailwind classes in templates, icons (`<i data-lucide="...">`) or the versions in `frontend/package.json`, run `make assets` and commit the result; CI checks that the committed files match a fresh build.
 
-CI runs the same checks on every push and pull request, plus tests on Linux and Windows with Python 3.12–3.14, a test run with the lowest dependency versions allowed by `pyproject.toml`, and the smoke test against the built wheel and sdist. Releases publish to PyPI only when all of that passes and the release tag matches the `pyproject.toml` version; pre-releases go to TestPyPI.
+CI (`.github/workflows/ci.yml`) runs the same checks on every push and pull request, plus tests on Linux and Windows with Python 3.12–3.14, a test run with the lowest dependency versions allowed by `pyproject.toml`, and the smoke test against the built wheel and sdist. Releases (`.github/workflows/publish.yml`) run the quality gates again, build with hash-pinned tools (`.github/requirements/release.txt`) and no caches, smoke-test, and publish to PyPI only when the release tag matches the `pyproject.toml` version; pre-releases go to TestPyPI. Workflows are checked with actionlint and [zizmor](https://docs.zizmor.sh) (`make workflows`); all actions are pinned to commit SHAs.
 
 ### Acceptance Tests for the Review Fixes
 

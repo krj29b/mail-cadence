@@ -1,0 +1,6 @@
+# Tools used to build and check release distributions (.github/workflows/_build.yml).
+# Regenerate the pinned, hashed file after changes:
+#   uv pip compile --universal --python-version 3.12 --generate-hashes .github/requirements/release.in -o .github/requirements/release.txt
+build
+twine
+hatchling

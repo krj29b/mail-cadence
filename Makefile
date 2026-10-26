@@ -1,5 +1,5 @@
 # Recipes must be indented with tabs.
-.PHONY: install test lint dead-code complexity audit quality-gate smoke-test assets run-dry clean
+.PHONY: install test lint dead-code complexity audit quality-gate smoke-test assets workflows run-dry clean
 
 PYTHON ?= python
 CODE_DIRS = src tests scripts
@@ -42,6 +42,11 @@ smoke-test:
 # is committed, so installing or packaging mail-cadence never needs Node).
 assets:
 	cd frontend && npm ci --ignore-scripts --no-audit --no-fund && npm run build
+
+# Lint and security-audit the GitHub Actions workflows (same versions as CI; needs uv).
+workflows:
+	uvx --from actionlint-py actionlint .github/workflows/*.yml
+	uvx zizmor@1.31.1 --offline .github/workflows
 
 run-dry:
 	$(PYTHON) -m mail_cadence.cli \

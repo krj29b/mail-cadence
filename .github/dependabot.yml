@@ -1,12 +1,22 @@
 version: 2
 updates:
   # Keep the actions used in .github/workflows up to date (one grouped PR per week).
+  # Actions are pinned to commit SHAs with a "# vX.Y.Z" comment; Dependabot updates both.
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
     groups:
       github-actions:
+        patterns: ["*"]
+
+  # Hash-pinned release build tools (build, twine, hatchling) used by _build.yml.
+  - package-ecosystem: pip
+    directory: /.github/requirements
+    schedule:
+      interval: weekly
+    groups:
+      release-tools:
         patterns: ["*"]
 
   # Build-time web panel assets (Tailwind, htmx, lucide, fonts) pinned in

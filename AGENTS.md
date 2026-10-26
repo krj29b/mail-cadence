@@ -11,7 +11,15 @@ Before declaring code readiness, run all of the following tools. None of them ma
 5. `xenon --max-absolute B --max-modules B --max-average B src` – no function or method may have a complexity rating worse than `B` (`radon cc src -a -nb` only reports and never fails).
 6. `pip-audit --skip-editable` – no known vulnerabilities in dependencies.
 
-`make quality-gate` runs all of them; CI (`.github/workflows/publish.yml`) runs the same targets, the tests on Linux and Windows with Python 3.12–3.14 and with the lowest declared dependency versions, and `scripts/smoke_test_wheel.py` against the built wheel and sdist. When raising a dependency's minimum, keep `pyproject.toml` lower bounds honest: the lowest-versions job installs exactly those.
+`make quality-gate` runs all of them; CI (`.github/workflows/ci.yml`) runs the same targets, the tests on Linux and Windows with Python 3.12–3.14 and with the lowest declared dependency versions, and `scripts/smoke_test_wheel.py` against the built wheel and sdist. When raising a dependency's minimum, keep `pyproject.toml` lower bounds honest: the lowest-versions job installs exactly those.
+
+**GitHub Actions rules** (enforced by the zizmor job; run `make workflows` locally):
+* Pin every action to a full commit SHA with a `# vX.Y.Z` comment; never a tag or branch.
+* Every `actions/checkout` sets `persist-credentials: false`.
+* Default `permissions: contents: read`; grant more only per job (`id-token: write` only on publish jobs).
+* Never interpolate `${{ ... }}` from event data into `run:` scripts; pass it through `env:`.
+* `publish.yml` (releases) and `_build.yml` use no caches. Keep the file name `publish.yml`: PyPI/TestPyPI Trusted Publishing is registered for it.
+* Release builds use `--no-isolation` with `.github/requirements/release.txt` (`--require-hashes`); regenerate it with the command in `release.in`.
 
 ## 2. SQLite Database Layer (`database.py`, `repository.py`, `xml_loader.py`)
 * **Ban on nested `with self.conn:` blocks:** In the `sqlite3` library, exiting a `with conn:` block immediately performs a `COMMIT` across the entire connection.
