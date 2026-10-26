@@ -1,0 +1,26 @@
+name: Feature Request
+    description: Suggest an enhancement or new feature for mail-cadence
+    title: "[Feature]: "
+    labels: ["enhancement"]
+    body:
+      - type: textarea
+        id: problem
+        attributes:
+          label: Problem or Use Case
+          description: What problem are you trying to solve?
+        validations:
+          required: true
+  
+      - type: textarea
+        id: proposal
+        attributes:
+          label: Proposed Solution
+          description: Describe how you would like this feature to work (CLI flags, XML schema, Web UI, etc.).
+        validations:
+          required: true
+  
+      - type: textarea
+        id: alternatives
+        attributes:
+          label: Alternatives Considered
+          description: Any workarounds or alternative approaches you've considered.
