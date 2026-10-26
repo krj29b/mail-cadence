@@ -1,4 +1,6 @@
 import sqlite3
+from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 
 from mail_cadence.models import MAX_RETRIES_LIMIT
@@ -79,7 +81,7 @@ CREATE TABLE IF NOT EXISTS execution_logs (
     duration_ms REAL NOT NULL DEFAULT 0.0,
     error_details TEXT,
     attempt_count INTEGER NOT NULL DEFAULT 1,
-    executed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    executed_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now')),
     dry_run INTEGER NOT NULL DEFAULT 0
 );
 
@@ -110,16 +112,39 @@ def get_connection(
     return conn
 
 
-# Columns added after the first schema version: (table, column, definition).
-_ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
+def to_utc_iso(dt: datetime) -> str:
+    """The one timestamp format stored in the database: ISO 8601 in UTC with offset."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC).isoformat()
+
+
+def _column_names(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+
+
+# --- Migrations ------------------------------------------------------------------------
+# PRAGMA user_version holds the number of migrations applied. Every migration must be
+# idempotent: databases created before versioning start at 0 and run all of them, and a
+# fresh database gets the full SCHEMA_SQL from migration 1 before the later ones run.
+
+# Columns added after the first released schema: (table, column, definition).
+_LEGACY_ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("hour_windows", "days_of_week", "TEXT NOT NULL DEFAULT '*'"),
     ("execution_logs", "dry_run", "INTEGER NOT NULL DEFAULT 0"),
 )
 
 
-# Idempotent fixes that bring rows written by older versions in line with current validation.
-# The values match how older versions behaved (unknown priority -> normal, negative retries -> 0).
-_DATA_FIXUPS: tuple[tuple[str, tuple[object, ...]], ...] = (
+def _migrate_base_schema(conn: sqlite3.Connection) -> None:
+    """1: create missing tables and indexes, add columns missing from pre-versioning DBs."""
+    conn.executescript(SCHEMA_SQL)
+    for table, column, definition in _LEGACY_ADDED_COLUMNS:
+        if column not in _column_names(conn, table):
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+# Values match how older versions behaved (unknown priority -> normal, negative retries -> 0).
+_TASK_FIXUPS: tuple[tuple[str, tuple[object, ...]], ...] = (
     (
         "UPDATE tasks SET priority = lower(trim(priority)) WHERE priority <> lower(trim(priority))",
         (),
@@ -130,12 +155,51 @@ _DATA_FIXUPS: tuple[tuple[str, tuple[object, ...]], ...] = (
 )
 
 
-def init_db(conn: sqlite3.Connection) -> None:
-    conn.executescript(SCHEMA_SQL)
-    for table, column, definition in _ADDED_COLUMNS:
-        cols = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
-        if column not in cols:
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
-    for statement, params in _DATA_FIXUPS:
+def _migrate_task_validation(conn: sqlite3.Connection) -> None:
+    """2: bring task rows in line with the stricter priority / max_retries validation."""
+    for statement, params in _TASK_FIXUPS:
         conn.execute(statement, params)
-    conn.commit()
+
+
+def _migrate_executed_at_to_iso(conn: sqlite3.Connection) -> None:
+    """3: SQLite CURRENT_TIMESTAMP values ('YYYY-MM-DD HH:MM:SS', UTC) -> ISO 8601 UTC."""
+    if "executed_at" not in _column_names(conn, "execution_logs"):
+        return
+    conn.execute(
+        """
+        UPDATE execution_logs
+        SET executed_at = replace(executed_at, ' ', 'T') || '+00:00'
+        WHERE executed_at GLOB
+            '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9]'
+        """
+    )
+
+
+MIGRATIONS: tuple[Callable[[sqlite3.Connection], None], ...] = (
+    _migrate_base_schema,
+    _migrate_task_validation,
+    _migrate_executed_at_to_iso,
+)
+SCHEMA_VERSION = len(MIGRATIONS)
+
+
+def schema_version(conn: sqlite3.Connection) -> int:
+    return int(conn.execute("PRAGMA user_version").fetchone()[0])
+
+
+def init_db(conn: sqlite3.Connection) -> None:
+    """Create or upgrade the schema to SCHEMA_VERSION. Cheap when already up to date.
+
+    Raises sqlite3.DatabaseError if the database was written by a newer version.
+    """
+    current = schema_version(conn)
+    if current > SCHEMA_VERSION:
+        msg = (
+            f"Database schema version {current} is newer than this version of "
+            f"mail-cadence supports ({SCHEMA_VERSION}); upgrade mail-cadence."
+        )
+        raise sqlite3.DatabaseError(msg)
+    for version in range(current + 1, SCHEMA_VERSION + 1):
+        MIGRATIONS[version - 1](conn)
+        conn.execute(f"PRAGMA user_version = {version:d}")
+        conn.commit()

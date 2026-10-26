@@ -5,6 +5,7 @@ from collections import defaultdict
 from datetime import UTC, datetime
 from typing import Any, Literal
 
+from mail_cadence.database import to_utc_iso
 from mail_cadence.models import (
     BodyTemplate,
     ContextVar,
@@ -396,8 +397,8 @@ class DatabaseRepository:
                 """
                 INSERT INTO execution_logs
                 (batch_id, task_id, status, sent_count, failed_recipients,
-                 duration_ms, error_details, attempt_count, dry_run)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 duration_ms, error_details, attempt_count, dry_run, executed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     batch_id,
@@ -409,14 +410,12 @@ class DatabaseRepository:
                     result.error_details,
                     result.attempt_count,
                     int(dry_run),
+                    to_utc_iso(datetime.now(UTC)),
                 ),
             )
 
             if not dry_run and result.status != TaskExecutionStatus.SKIPPED_SCHEDULE:
-                run_at = executed_at or datetime.now(UTC)
-                if run_at.tzinfo is None:
-                    run_at = run_at.replace(tzinfo=UTC)
-                now_utc_str = run_at.astimezone(UTC).isoformat()
+                run_at = to_utc_iso(executed_at or datetime.now(UTC))
                 self.conn.execute(
                     """
                     UPDATE tasks
@@ -425,7 +424,7 @@ class DatabaseRepository:
                         last_error = ?
                     WHERE id = ?
                     """,
-                    (now_utc_str, result.status.value, result.error_details, result.task_id),
+                    (run_at, result.status.value, result.error_details, result.task_id),
                 )
 
     def get_task_execution_states(

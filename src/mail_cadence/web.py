@@ -5,7 +5,7 @@ import sqlite3
 from collections.abc import Generator
 from contextlib import closing
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -331,13 +331,28 @@ def _build_logs_pagination_context(repo: DatabaseRepository, filters: LogFilters
 
 PACKAGE_TEMPLATES_DIR = Path(__file__).parent / "web_templates"
 templates = Jinja2Templates(directory=str(PACKAGE_TEMPLATES_DIR))
+
+
+def format_utc_timestamp(value: object) -> str:
+    """Show a stored ISO 8601 timestamp as 'YYYY-MM-DD HH:MM:SS UTC' (raw text if unparsable)."""
+    if not value:
+        return ""
+    try:
+        dt = datetime.fromisoformat(str(value))
+    except ValueError:
+        return str(value)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+templates.env.filters["utc_time"] = format_utc_timestamp
 router = APIRouter()
 
 
 def get_repo(request: Request) -> Generator[DatabaseRepository, None, None]:
     db_path = getattr(request.app.state, "db_path", "mail_cadence.db")
     with closing(get_connection(db_path)) as conn:
-        init_db(conn)
         yield DatabaseRepository(conn)
 
 
@@ -919,6 +934,9 @@ def create_app(
         version=__version__,
         dependencies=[Depends(verify_credentials), Depends(verify_same_origin)],
     )
+    # Create or migrate the schema once at startup, not on every request.
+    with closing(get_connection(db_path)) as conn:
+        init_db(conn)
     app.state.allow_insecure_no_auth = allow_insecure_no_auth
     app.state.db_path = str(db_path)
     app.state.template_dir = str(template_dir)

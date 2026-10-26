@@ -65,6 +65,10 @@ Supported environment settings defined in `mail_cadence.models.Settings`:
 | `ADMIN_USER` | *None* | Web panel username. Without it (and `ADMIN_PASSWORD`) the panel refuses access unless started with `serve --insecure-no-auth` on a loopback host |
 | `ADMIN_PASSWORD` | *None* | Web panel password |
 
+### Database Upgrades
+
+The database schema is versioned (`PRAGMA user_version`). Existing databases are upgraded automatically the first time a new version of `mail-cadence` opens them (any CLI command or `serve`); back up the `.db` file before upgrading. A database created by a newer version is refused (exit code `1`). Timestamps are stored as ISO 8601 in UTC.
+
 ### Task and Schedule Rules
 
 - `priority` is `high`, `normal` or `low`; it only sets the start order (all eligible tasks run concurrently, limited per schedule window). `max_retries` is `0`–`10`.

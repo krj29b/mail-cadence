@@ -178,7 +178,7 @@ erDiagram
         REAL duration_ms NOT NULL "DEFAULT 0.0"
         TEXT error_details
         INTEGER attempt_count NOT NULL "DEFAULT 1"
-        DATETIME executed_at NOT NULL "DEFAULT CURRENT_TIMESTAMP"
+        DATETIME executed_at NOT NULL "ISO 8601 UTC"
         INTEGER dry_run NOT NULL "DEFAULT 0"
     }
 
@@ -188,6 +188,14 @@ erDiagram
     tasks ||--o{ task_context_variables : "contains (ON DELETE CASCADE)"
     tasks ||--o{ execution_logs : "logs history"
 ```
+
+### Schema Versioning & Timestamps
+
+- `PRAGMA user_version` stores how many migrations from `database.MIGRATIONS` have been applied. `init_db` runs the missing ones in order and is a no-op on an up-to-date database. A database with a higher version than the code knows is refused (`sqlite3.DatabaseError`; `run` exits with code `1`).
+- Migrations: `1` creates the schema and adds columns missing from databases created before versioning; `2` normalizes task rows to the current validation (unknown priorities become `normal`, `max_retries` is clamped to `0..10`); `3` converts old `executed_at` values from SQLite `CURRENT_TIMESTAMP` format to ISO 8601.
+- Every migration is idempotent, because databases created before versioning start at version `0` and run all of them.
+- The web panel migrates once in `create_app`; CLI commands and dispatch runs call `init_db` when they open the database.
+- All timestamps (`execution_logs.executed_at`, `tasks.last_run`) are stored as ISO 8601 in UTC with an explicit offset (`database.to_utc_iso`, e.g. `2026-10-17T06:15:00+00:00`). The panel shows them as `YYYY-MM-DD HH:MM:SS UTC`.
 
 ---
 
@@ -217,7 +225,7 @@ Data structures map directly between XML elements, Pydantic objects, and SQLite 
 | `MailTask.schedule_ref` | Must reference an existing schedule: XML import fails cross-reference validation, the panel returns `400`. |
 | `HourWindow.end` | `HH:MM[:SS]` or `24:00`. A window `00:00`-`23:59` leaves the last minute of the day uncovered; use `24:00`. |
 
-`init_db` also normalizes rows written by older versions: unknown priorities become `normal`, and `max_retries` is clamped to `0..10`.
+Migration `2` normalizes rows written by older versions: unknown priorities become `normal`, and `max_retries` is clamped to `0..10` (see Schema Versioning).
 
 ---
 
@@ -352,7 +360,7 @@ sequenceDiagram
     participant Reporter as ReportGenerator
 
     CLI->>Runner: run_dispatch(DispatchOptions, Settings)
-    Runner->>Repo: init_db (column migrations + data fix-ups)
+    Runner->>Repo: init_db (apply pending migrations)
     opt XML Seeding Provided (--tasks-xml / --schedule-xml)
         Runner->>Repo: import_from_xml(mode="upsert")
         Repo->>DB: import_configuration (single transaction)

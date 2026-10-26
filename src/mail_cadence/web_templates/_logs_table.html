@@ -36,7 +36,7 @@
         <td class="py-3 px-4 font-mono">{{ log.sent_count }}</td>
         <td class="py-3 px-4 font-mono text-slate-400">{{ log.duration_ms }} ms</td>
         <td class="py-3 px-4 font-mono text-slate-400">{{ log.attempt_count }}</td>
-        <td class="py-3 px-4 font-mono text-slate-400 whitespace-nowrap">{{ log.executed_at }}</td>
+        <td class="py-3 px-4 font-mono text-slate-400 whitespace-nowrap">{{ log.executed_at | utc_time }}</td>
       </tr>
       {% endfor %}
     </tbody>

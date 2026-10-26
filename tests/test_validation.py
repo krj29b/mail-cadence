@@ -168,6 +168,8 @@ def test_init_db_normalizes_legacy_priority_and_retries(tmp_path: Path) -> None:
         conn.execute("UPDATE tasks SET priority = 'urgent' WHERE id = 'T_UNKNOWN'")
         conn.execute("UPDATE tasks SET max_retries = -2 WHERE id = 'T_NEGATIVE'")
         conn.execute("UPDATE tasks SET max_retries = 99 WHERE id = 'T_HUGE'")
+        # Pretend the rows come from a database written before migration 2.
+        conn.execute("PRAGMA user_version = 1")
 
     init_db(conn)
     tasks = {t.id: t for t in repo.get_mail_tasks()}

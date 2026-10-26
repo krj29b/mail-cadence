@@ -71,7 +71,11 @@ async def run_dispatch(options: DispatchOptions, settings: Settings) -> int:
     )
 
     with closing(get_connection(options.db_path)) as conn:
-        init_db(conn)
+        try:
+            init_db(conn)
+        except sqlite3.Error as exc:
+            logger.error(f"Cannot open or migrate database {options.db_path}: {exc}")
+            return EXIT_CONFIG_ERROR
         repo = DatabaseRepository(conn)
 
         if not _seed_xml_if_provided(conn, options):
