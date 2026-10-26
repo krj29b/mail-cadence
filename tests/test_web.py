@@ -19,7 +19,7 @@ from mail_cadence.models import (
     WorkSchedules,
 )
 from mail_cadence.repository import DatabaseRepository
-from mail_cadence.web import _discover_available_templates, create_app
+from mail_cadence.web import _discover_available_templates, _discover_templates_cached, create_app
 
 
 @pytest.fixture
@@ -805,3 +805,16 @@ def test_web_rejects_cross_site_state_changes(client: TestClient) -> None:
 
     # Safe methods are not affected.
     assert client.get("/", headers={"Sec-Fetch-Site": "cross-site"}).status_code == 200
+
+
+def test_discover_available_templates_caching(tmp_path: Path) -> None:
+    _discover_templates_cached.cache_clear()
+    (tmp_path / "test.html.j2").write_text("content")
+
+    res1 = _discover_available_templates(tmp_path)
+    res2 = _discover_available_templates(tmp_path)
+
+    assert "test.html.j2" in res1
+    assert res1 == res2
+    info = _discover_templates_cached.cache_info()
+    assert info.hits >= 1
