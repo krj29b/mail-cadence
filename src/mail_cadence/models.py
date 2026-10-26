@@ -1,5 +1,7 @@
 import os
+import re
 from datetime import datetime, time
+from email.utils import getaddresses
 from enum import StrEnum
 from functools import cached_property, lru_cache
 from pathlib import Path
@@ -28,7 +30,20 @@ def resolve_env_file() -> Path:
     return path
 
 
-PRIORITY_ORDER: dict[str, int] = {"high": 0, "normal": 1, "low": 2}
+class EmailPriority(StrEnum):
+    HIGH = "high"
+    NORMAL = "normal"
+    LOW = "low"
+
+
+PRIORITY_ORDER: dict[str, int] = {
+    EmailPriority.HIGH: 0,
+    EmailPriority.NORMAL: 1,
+    EmailPriority.LOW: 2,
+}
+
+MAX_RETRIES_LIMIT = 10
+END_OF_DAY = "24:00"
 
 
 class TaskExecutionStatus(StrEnum):
@@ -46,6 +61,20 @@ def _check_no_newlines(value: str | None, field_name: str) -> None:
         raise ValueError(msg)
 
 
+_ADDR_SPEC_RE = re.compile(r"^[^@\s<>()\[\],;:\"]+@[^@\s<>()\[\],;:\"]+$")
+
+
+def _check_email_address(value: str | None, field_name: str) -> None:
+    """Accept one address, bare (``a@example.com``) or with a name (``Ann <a@example.com>``)."""
+    if value is None:
+        return
+    _check_no_newlines(value, field_name)
+    parsed = getaddresses([value])
+    if len(parsed) != 1 or not _ADDR_SPEC_RE.match(parsed[0][1]):
+        msg = f"Field '{field_name}' contains an invalid email address: {value!r}"
+        raise ValueError(msg)
+
+
 class ReportSettings(BaseXmlModel, tag="ReportSettings"):
     recipient: str = element(tag="Recipient")
     sender: str | None = element(tag="Sender", default=None)
@@ -53,9 +82,9 @@ class ReportSettings(BaseXmlModel, tag="ReportSettings"):
     include_full_error_trace: bool = element(tag="IncludeFullErrorTrace", default=True)
 
     @model_validator(mode="after")
-    def validate_no_newlines(self) -> Self:
-        _check_no_newlines(self.recipient, "recipient")
-        _check_no_newlines(self.sender, "sender")
+    def validate_addresses(self) -> Self:
+        _check_email_address(self.recipient, "recipient")
+        _check_email_address(self.sender or None, "sender")
         return self
 
 
@@ -65,10 +94,10 @@ class Recipients(BaseXmlModel, tag="Recipients"):
     bcc: list[str] = element(tag="Bcc", default_factory=list)
 
     @model_validator(mode="after")
-    def validate_no_newlines(self) -> Self:
+    def validate_addresses(self) -> Self:
         for field_name, addr_list in [("to", self.to), ("cc", self.cc), ("bcc", self.bcc)]:
             for addr in addr_list:
-                _check_no_newlines(addr, field_name)
+                _check_email_address(addr, field_name)
         return self
 
     @property
@@ -88,8 +117,8 @@ class ContextVar(BaseXmlModel, tag="Var"):
 
 class MailTask(BaseXmlModel, tag="MailTask"):
     id: str = attr()
-    max_retries: int = attr(default=3)
-    priority: str = attr(default="normal")
+    max_retries: int = attr(default=3, ge=0, le=MAX_RETRIES_LIMIT)
+    priority: EmailPriority = attr(default=EmailPriority.NORMAL)
     schedule_ref: str = attr()
     sender: str = element(tag="Sender")
     recipients: Recipients = element(tag="Recipients")
@@ -99,10 +128,18 @@ class MailTask(BaseXmlModel, tag="MailTask"):
         "ContextVariables", element(tag="Var", default_factory=list), default_factory=list
     )
 
+    @field_validator("priority", mode="before")
+    @classmethod
+    def normalize_priority(cls, v: Any) -> Any:
+        return v.strip().lower() if isinstance(v, str) else v
+
     @model_validator(mode="after")
-    def validate_no_newlines(self) -> Self:
-        _check_no_newlines(self.sender, "sender")
+    def validate_fields(self) -> Self:
+        # An empty sender falls back to SMTP_USER at dispatch time.
+        _check_email_address(self.sender or None, "sender")
         _check_no_newlines(self.subject, "subject")
+        if not self.recipients.all_recipients:
+            raise ValueError(f"Task '{self.id}' has no recipients (To, Cc or Bcc)")
         return self
 
     def get_context_dict(self) -> dict[str, str]:
@@ -133,7 +170,16 @@ def parse_time_str(time_str: str) -> time:
 VALID_WEEKDAYS = {"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
 
 
+def parse_window_end(time_str: str) -> time:
+    """Parse a window end; ``24:00`` means the end of the day (inclusive up to 23:59:59.999999)."""
+    if isinstance(time_str, str) and time_str.strip() in (END_OF_DAY, f"{END_OF_DAY}:00"):
+        return time.max
+    return parse_time_str(time_str)
+
+
 class HourWindow(BaseXmlModel, tag="HourWindow"):
+    """Allowed sending window; both ends are inclusive. Use end="24:00" for the end of day."""
+
     start: str = attr()
     end: str = attr()
     days_of_week: str = attr(default="*")
@@ -161,7 +207,7 @@ class HourWindow(BaseXmlModel, tag="HourWindow"):
     @model_validator(mode="after")
     def validate_hour_window(self) -> Self:
         parse_time_str(self.start)
-        parse_time_str(self.end)
+        parse_window_end(self.end)
         if self.max_concurrency < 1:
             raise ValueError(f"max_concurrency must be >= 1, got {self.max_concurrency}")
         if self.rate_limit_per_min < 0:
@@ -174,7 +220,7 @@ class HourWindow(BaseXmlModel, tag="HourWindow"):
 
     @cached_property
     def end_time(self) -> time:
-        return parse_time_str(self.end)
+        return parse_window_end(self.end)
 
 
 class Schedule(BaseXmlModel, tag="Schedule"):

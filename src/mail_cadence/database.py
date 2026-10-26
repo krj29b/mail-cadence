@@ -1,6 +1,8 @@
 import sqlite3
 from pathlib import Path
 
+from mail_cadence.models import MAX_RETRIES_LIMIT
+
 SCHEMA_SQL = """
 PRAGMA foreign_keys = ON;
 
@@ -115,10 +117,25 @@ _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
 )
 
 
+# Idempotent fixes that bring rows written by older versions in line with current validation.
+# The values match how older versions behaved (unknown priority -> normal, negative retries -> 0).
+_DATA_FIXUPS: tuple[tuple[str, tuple[object, ...]], ...] = (
+    (
+        "UPDATE tasks SET priority = lower(trim(priority)) WHERE priority <> lower(trim(priority))",
+        (),
+    ),
+    ("UPDATE tasks SET priority = 'normal' WHERE priority NOT IN ('high', 'normal', 'low')", ()),
+    ("UPDATE tasks SET max_retries = 0 WHERE max_retries < 0", ()),
+    ("UPDATE tasks SET max_retries = ? WHERE max_retries > ?", (MAX_RETRIES_LIMIT,) * 2),
+)
+
+
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA_SQL)
     for table, column, definition in _ADDED_COLUMNS:
         cols = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
         if column not in cols:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+    for statement, params in _DATA_FIXUPS:
+        conn.execute(statement, params)
     conn.commit()

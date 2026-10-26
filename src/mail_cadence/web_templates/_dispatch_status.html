@@ -1,0 +1,30 @@
+<div id="dispatch-status"
+     {% if job and job.running %}hx-get="/dispatch/status" hx-trigger="every 2s" hx-swap="outerHTML"{% endif %}>
+  {% if job %}
+    {% set label = "Task '" ~ job.task_id ~ "'" if job.kind == 'task' else "Dispatch batch" %}
+    {% if job.running %}
+      <div class="alert-success flex items-center gap-2">
+        <i data-lucide="loader-2" class="w-4 h-4 shrink-0 animate-spin"></i>
+        <span>{{ label }} running{% if job.dry_run %} (dry run){% endif %} — started {{ job.started_at.strftime('%H:%M:%S UTC') }}</span>
+      </div>
+    {% elif job.state == 'error' %}
+      <div class="alert-error">{{ label }} crashed: {{ job.error }}</div>
+    {% elif job.result %}
+      {% set res = job.result %}
+      {% set badge = {'SUCCESS': 'badge-success', 'FAILED': 'badge-failed'}.get(res.status.value, 'badge-partial') %}
+      <div class="{{ 'alert-error' if res.status.value == 'FAILED' else 'alert-success' }}">
+        Task '<strong>{{ job.task_id }}</strong>' executed:
+        <span class="{{ badge }}">{{ res.status.value }}</span>
+        (Sent: {{ res.sent_count }}){% if res.error_details %} — {{ res.error_details }}{% endif %}
+      </div>
+    {% else %}
+      <div class="{{ 'alert-success' if job.exit_code == 0 else 'alert-error' }}">
+        {{ label }} finished{% if job.dry_run %} (dry run){% endif %}:
+        {% if job.exit_code == 0 %}all executed tasks succeeded
+        {% elif job.exit_code == 2 %}one or more tasks failed
+        {% else %}configuration or database error (exit code {{ job.exit_code }}){% endif %}.
+        <a href="/" class="underline">Refresh</a> to see the results.
+      </div>
+    {% endif %}
+  {% endif %}
+</div>

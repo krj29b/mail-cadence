@@ -30,6 +30,7 @@ from mail_cadence.mailer import (
 from mail_cadence.models import (
     BodyTemplate,
     ContextVar,
+    EmailPriority,
     HourWindow,
     MailTask,
     Recipients,
@@ -483,12 +484,20 @@ def list_tasks(
     )
 
 
+def _parse_priority(raw: str) -> EmailPriority:
+    try:
+        return EmailPriority(raw.strip().lower())
+    except ValueError:
+        allowed = ", ".join(p.value for p in EmailPriority)
+        raise ValueError(f"Invalid priority '{raw}'; must be one of: {allowed}") from None
+
+
 def _build_task_from_form_dict(form_dict: dict[str, Any], default_sender: str = "") -> MailTask:
     task_id = str(form_dict.get("id", ""))
     schedule_ref = str(form_dict.get("schedule_ref", ""))
     sender_raw = str(form_dict.get("sender", ""))
     sender = sender_raw if sender_raw.strip() else default_sender
-    priority = str(form_dict.get("priority", "normal"))
+    priority = _parse_priority(str(form_dict.get("priority", "normal")))
     max_retries = int(form_dict.get("max_retries", 3))
     subject = str(form_dict.get("subject", ""))
     body_format = str(form_dict.get("body_format", "html"))
@@ -527,8 +536,10 @@ async def save_task(
         form_data = await request.form()
         form_dict = {k: v for k, v in form_data.items()}
         task = _build_task_from_form_dict(form_dict, default_sender=default_sender)
+        if not repo.schedule_exists(task.schedule_ref):
+            raise ValueError(f"Schedule '{task.schedule_ref}' does not exist")
         was_reset = repo.save_single_task(task)
-    except (ValidationError, ValueError, json.JSONDecodeError) as exc:
+    except (ValidationError, ValueError, json.JSONDecodeError, sqlite3.IntegrityError) as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Validation Error: {exc}",

@@ -35,7 +35,7 @@ def tmp_db_path(tmp_path: Path) -> Path:
                 Schedule(
                     id="sched_default",
                     description="Default schedule",
-                    allowed_hours=[HourWindow(start="00:00", end="23:59")],
+                    allowed_hours=[HourWindow(start="00:00", end="24:00")],
                 )
             ],
         )

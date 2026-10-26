@@ -82,7 +82,7 @@ def test_repository_save_and_get_mail_config() -> None:
     repo = DatabaseRepository(conn)
 
     schedules = WorkSchedules(
-        schedules=[Schedule(id="SCHED-01", allowed_hours=[HourWindow(start="00:00", end="23:59")])]
+        schedules=[Schedule(id="SCHED-01", allowed_hours=[HourWindow(start="00:00", end="24:00")])]
     )
     repo.save_work_schedules(schedules)
 
@@ -134,7 +134,7 @@ def test_repository_log_execution() -> None:
     repo = DatabaseRepository(conn)
 
     schedules = WorkSchedules(
-        schedules=[Schedule(id="SCHED-01", allowed_hours=[HourWindow(start="00:00", end="23:59")])]
+        schedules=[Schedule(id="SCHED-01", allowed_hours=[HourWindow(start="00:00", end="24:00")])]
     )
     repo.save_work_schedules(schedules)
 
@@ -216,7 +216,7 @@ def test_get_task_execution_states() -> None:
     repo = DatabaseRepository(conn)
 
     schedules = WorkSchedules(
-        schedules=[Schedule(id="SCHED-01", allowed_hours=[HourWindow(start="00:00", end="23:59")])]
+        schedules=[Schedule(id="SCHED-01", allowed_hours=[HourWindow(start="00:00", end="24:00")])]
     )
     repo.save_work_schedules(schedules)
 

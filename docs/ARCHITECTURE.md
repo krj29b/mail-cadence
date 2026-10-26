@@ -201,7 +201,20 @@ Data structures map directly between XML elements, Pydantic objects, and SQLite 
 | `MailTask` | `<MailTask>` | `tasks`, `task_recipients`, `task_context_variables` | XML attributes: `id`, `max_retries`, `priority`, `schedule_ref`. Elements: `Sender`, `Recipients` (`To`, `Cc`, `Bcc`), `Subject`, `BodyTemplate`, `ContextVariables` (`Var`). |
 | `WorkSchedules` | `<WorkSchedules>` | `work_schedules_meta`, `schedules` | Root container with `timezone` attribute mapping to `work_schedules_meta.timezone` (`id = 1`). |
 | `Schedule` | `<Schedule>` | `schedules` | XML attribute: `id`, `description`. Contains list of `HourWindow` objects. |
-| `HourWindow` | `<HourWindow>` | `hour_windows` | Attributes: `start`, `end`, `max_concurrency`, `rate_limit_per_min`. FK to `schedules.id` (`ON DELETE CASCADE`). |
+| `HourWindow` | `<HourWindow>` | `hour_windows` | Attributes: `start`, `end`, `days_of_week`, `max_concurrency`, `rate_limit_per_min`. Both ends are inclusive; `end="24:00"` means the end of the day. FK to `schedules.id` (`ON DELETE CASCADE`). |
+
+### Validation Rules
+
+| Field | Rule |
+| --- | --- |
+| `MailTask.priority` | `EmailPriority`: `high`, `normal` or `low` (case-insensitive on input). |
+| `MailTask.max_retries` | Integer `0..10` (`MAX_RETRIES_LIMIT`); attempts = `max_retries + 1`. |
+| `MailTask` recipients | At least one address across `To`, `Cc` and `Bcc`. |
+| Addresses (`Sender`, `To`, `Cc`, `Bcc`, report `Recipient`/`Sender`) | Exactly one address per entry, bare (`a@example.com`) or with a display name (`Ann <a@example.com>`). An empty task `Sender` falls back to `SMTP_USER`. |
+| `MailTask.schedule_ref` | Must reference an existing schedule: XML import fails cross-reference validation, the panel returns `400`. |
+| `HourWindow.end` | `HH:MM[:SS]` or `24:00`. A window `00:00`-`23:59` leaves the last minute of the day uncovered; use `24:00`. |
+
+`init_db` also normalizes rows written by older versions: unknown priorities become `normal`, and `max_retries` is clamped to `0..10`.
 
 ---
 
@@ -432,5 +445,5 @@ stateDiagram-v2
 - State-changing requests (`POST`, `PUT`, `PATCH`, `DELETE`) are rejected with `403` when `Sec-Fetch-Site` is not `same-origin`/`none` or when `Origin` does not match `Host` (CSRF protection for Basic Auth).
 
 ### 4. SMTP Header Injection Prevention
-- Header string fields (`sender`, `recipient`, `subject`, `to`, `cc`, `bcc`) are validated using `_check_no_newlines` Pydantic validators in `models.py`.
+- Header string fields (`sender`, `recipient`, `subject`, `to`, `cc`, `bcc`) are validated using `_check_no_newlines` Pydantic validators in `models.py`; address fields additionally go through `_check_email_address` (one parseable address per entry).
 - Rejects inputs containing CR (`\r`) or LF (`\n`) characters, preventing SMTP command injection and unauthorized header injection.

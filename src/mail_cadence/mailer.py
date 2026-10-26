@@ -375,7 +375,7 @@ class AsyncMailer:
         rate_limiter: TokenBucketRateLimiter | None,
     ) -> tuple[int, list[str], list[str], str | None]:
         attempts = 0
-        max_attempts = max(1, task.max_retries + 1)
+        max_attempts = task.max_retries + 1
         last_error: str | None = None
         pending_recipients = list(all_recipients)
         successful_recipients: list[str] = []
@@ -420,9 +420,10 @@ class AsyncMailer:
         sender_addr = self._resolve_sender(task.sender)
 
         if not all_recipients:
+            # MailTask validation rejects this; guard against unvalidated (model_construct) tasks.
             return TaskExecutionResult(
                 task_id=task.id,
-                status=TaskExecutionStatus.SUCCESS,
+                status=TaskExecutionStatus.FAILED,
                 sent_count=0,
                 duration_ms=0.0,
                 error_details="No recipients defined",

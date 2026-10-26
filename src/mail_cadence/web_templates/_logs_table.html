@@ -29,6 +29,9 @@
           {% else %}
             <span class="badge-skipped"><span class="w-1.5 h-1.5 rounded-full bg-slate-400"></span>{{ log.status }}</span>
           {% endif %}
+          {% if log.dry_run %}
+            <span class="badge-skipped ml-1" title="Simulated run: nothing was sent">DRY-RUN</span>
+          {% endif %}
         </td>
         <td class="py-3 px-4 font-mono">{{ log.sent_count }}</td>
         <td class="py-3 px-4 font-mono text-slate-400">{{ log.duration_ms }} ms</td>

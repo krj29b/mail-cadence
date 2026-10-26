@@ -65,6 +65,13 @@ Supported environment settings defined in `mail_cadence.models.Settings`:
 | `ADMIN_USER` | *None* | Web panel username. Without it (and `ADMIN_PASSWORD`) the panel refuses access unless started with `serve --insecure-no-auth` on a loopback host |
 | `ADMIN_PASSWORD` | *None* | Web panel password |
 
+### Task and Schedule Rules
+
+- `priority` is `high`, `normal` or `low`; `max_retries` is `0`–`10`.
+- Every task needs at least one recipient (`To`, `Cc` or `Bcc`). Each entry is one address, bare or with a name (`Ann <ann@example.com>`).
+- `schedule_ref` must name an existing schedule.
+- Hour windows include both ends. To cover a whole day use `start="00:00" end="24:00"`; `23:59` leaves the last minute uncovered.
+
 ---
 
 ## CLI Usage Guide (`mail-cadence`)

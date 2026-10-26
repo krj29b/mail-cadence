@@ -23,7 +23,7 @@
       </button>
       <span id="dispatch-spinner" class="htmx-indicator inline-flex items-center gap-1.5 text-xs text-amber-400 font-mono">
         <i data-lucide="loader-2" class="w-3.5 h-3.5 animate-spin"></i>
-        <span>Running dispatch...</span>
+        <span>Starting dispatch...</span>
       </span>
     </form>
   </div>
@@ -35,6 +35,7 @@
   <span>{{ message }}</span>
 </div>
 {% endif %}
+{% include "_dispatch_status.html" %}
 {% if error %}
 <div class="alert-error flex items-center gap-2">
   <i data-lucide="alert-circle" class="w-4 h-4 shrink-0"></i>
@@ -53,7 +54,7 @@
     </div>
     <div class="mt-4">
       <div class="text-2xl font-bold font-mono text-white">{{ stats.total_executions }}</div>
-      <div class="text-xs text-slate-500 mt-1 font-mono">Tasks: {{ stats.total_tasks }} | Schedules: {{ stats.total_schedules }}</div>
+      <div class="text-xs text-slate-500 mt-1 font-mono">Tasks: {{ stats.total_tasks }} | Schedules: {{ stats.total_schedules }}{% if stats.dry_run_count %} | Dry-runs: {{ stats.dry_run_count }}{% endif %}</div>
     </div>
   </div>
 

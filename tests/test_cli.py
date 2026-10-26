@@ -82,7 +82,7 @@ async def test_shared_primitives_per_schedule_window(tmp_path: Path) -> None:
 <WorkSchedules timezone="UTC">
   <Schedule id="SCHED-01">
     <AllowedHours>
-      <HourWindow start="00:00" end="23:59" max_concurrency="5" rate_limit_per_min="60"/>
+      <HourWindow start="00:00" end="24:00" max_concurrency="5" rate_limit_per_min="60"/>
     </AllowedHours>
   </Schedule>
 </WorkSchedules>""")
@@ -225,7 +225,7 @@ async def test_task_priority_scheduling_order(tmp_path: Path) -> None:
 <WorkSchedules timezone="UTC">
   <Schedule id="SCHED-01">
     <AllowedHours>
-      <HourWindow start="00:00" end="23:59" max_concurrency="1" rate_limit_per_min="60"/>
+      <HourWindow start="00:00" end="24:00" max_concurrency="1" rate_limit_per_min="60"/>
     </AllowedHours>
   </Schedule>
 </WorkSchedules>""")

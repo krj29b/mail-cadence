@@ -187,7 +187,7 @@ async def test_full_dispatch_pipeline_real_smtp(
 <WorkSchedules timezone="UTC">
   <Schedule id="SCHED-E2E" description="E2E test schedule">
     <AllowedHours>
-      <HourWindow start="00:00" end="23:59" max_concurrency="5" rate_limit_per_min="60"/>
+      <HourWindow start="00:00" end="24:00" max_concurrency="5" rate_limit_per_min="60"/>
     </AllowedHours>
   </Schedule>
 </WorkSchedules>

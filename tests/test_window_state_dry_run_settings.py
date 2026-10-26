@@ -45,7 +45,7 @@ def db_path(tmp_path: Path) -> Path:
     repo.save_work_schedules(
         WorkSchedules(
             timezone="UTC",
-            schedules=[Schedule(id="S1", allowed_hours=[HourWindow(start="00:00", end="23:59")])],
+            schedules=[Schedule(id="S1", allowed_hours=[HourWindow(start="00:00", end="24:00")])],
         )
     )
     repo.save_single_task(_task())

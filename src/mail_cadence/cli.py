@@ -226,7 +226,7 @@ async def run_dispatch_pipeline(
             if eligible_tasks:
                 eligible_tasks.sort(
                     key=lambda item: (
-                        PRIORITY_ORDER.get(item[0].priority.lower(), 1),
+                        PRIORITY_ORDER[item[0].priority],
                         item[0].id,
                     )
                 )

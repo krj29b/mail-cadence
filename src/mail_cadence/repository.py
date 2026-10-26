@@ -618,6 +618,10 @@ class DatabaseRepository:
                     hw_data,
                 )
 
+    def schedule_exists(self, schedule_id: str) -> bool:
+        row = self.conn.execute("SELECT 1 FROM schedules WHERE id = ?", (schedule_id,)).fetchone()
+        return row is not None
+
     def delete_schedule(self, schedule_id: str) -> bool:
         with self.conn:
             cursor = self.conn.execute("DELETE FROM schedules WHERE id = ?", (schedule_id,))

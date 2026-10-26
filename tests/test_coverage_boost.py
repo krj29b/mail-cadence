@@ -79,15 +79,18 @@ def test_template_renderer_absolute_path(tmp_path: Path) -> None:
 async def test_mailer_no_recipients() -> None:
     settings = Settings()
     mailer = AsyncMailer(settings, dry_run=True)
-    task = MailTask(
+    # Validation rejects such a task; model_construct bypasses it to test the mailer guard.
+    task = MailTask.model_construct(
         id="T_NO_RECIP",
         schedule_ref="S1",
         sender="s@example.com",
         recipients=Recipients(to=[]),
         subject="Subj",
         body_template=BodyTemplate(template_path="t.j2"),
+        context_variables=[],
     )
     res = await mailer.dispatch_task(task)
+    assert res.status == TaskExecutionStatus.FAILED
     assert res.sent_count == 0
     assert "No recipients defined" in (res.error_details or "")
 
