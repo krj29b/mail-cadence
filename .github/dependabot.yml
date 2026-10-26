@@ -1,6 +1,7 @@
 version: 2
 updates:
-  # Keep the actions used in .github/workflows up to date (one grouped PR per week).
+  # Keep the actions used in .github/workflows up to date. In every entry below, minor and
+  # patch updates are grouped into one weekly PR; each major update gets its own PR.
   # Actions are pinned to commit SHAs with a "# vX.Y.Z" comment; Dependabot updates both.
   - package-ecosystem: github-actions
     directory: /
@@ -9,6 +10,7 @@ updates:
     groups:
       github-actions:
         patterns: ["*"]
+        update-types: [minor, patch]
 
   # Hash-pinned release build tools (build, twine, hatchling) used by _build.yml.
   - package-ecosystem: pip
@@ -18,6 +20,7 @@ updates:
     groups:
       release-tools:
         patterns: ["*"]
+        update-types: [minor, patch]
 
   # Build-time web panel assets (Tailwind, htmx, lucide, fonts) pinned in
   # frontend/package-lock.json. After merging, run `make assets` and commit web_static/
@@ -27,5 +30,12 @@ updates:
     schedule:
       interval: weekly
     groups:
+      # Only minor/patch updates are grouped; a major update arrives as its own PR.
       frontend:
         patterns: ["*"]
+        update-types: [minor, patch]
+    ignore:
+      # Tailwind 4 is a rewrite (CLI moved to @tailwindcss/cli, CSS-based config, renamed
+      # utilities, newer browsers only). Migrate deliberately, not through a version bump.
+      - dependency-name: tailwindcss
+        update-types: ["version-update:semver-major"]
