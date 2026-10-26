@@ -155,3 +155,48 @@ def test_get_logged_task_ids(repo: DatabaseRepository) -> None:
             TaskExecutionResult(task_id=task_id, status=TaskExecutionStatus.SUCCESS)
         )
     assert sorted(repo.get_logged_task_ids()) == ["a", "b"]
+
+
+def test_delete_mail_task_existing_and_non_existing(repo: DatabaseRepository) -> None:
+    schedule = Schedule(id="SCHED1", allowed_hours=[HourWindow(start="08:00", end="17:00")])
+    repo.save_single_schedule(schedule)
+
+    from mail_cadence.models import ContextVar
+
+    task = MailTask(
+        id="TASK1",
+        schedule_ref="SCHED1",
+        sender="sender@example.com",
+        recipients=Recipients(to=["to@example.com"], cc=["cc@example.com"]),
+        subject="Test Task",
+        body_template=BodyTemplate(template_path="builtin:daily_dispatch.html.j2"),
+        context_variables=[ContextVar(name="var1", value="val1")],
+    )
+    repo.save_single_task(task)
+
+    assert repo.get_mail_task("TASK1") is not None
+    rec_count = repo.conn.execute(
+        "SELECT COUNT(*) FROM task_recipients WHERE task_id = ?", ("TASK1",)
+    ).fetchone()[0]
+    var_count = repo.conn.execute(
+        "SELECT COUNT(*) FROM task_context_variables WHERE task_id = ?", ("TASK1",)
+    ).fetchone()[0]
+    assert rec_count == 2
+    assert var_count == 1
+
+    # Delete existing task
+    assert repo.delete_mail_task("TASK1") is True
+    assert repo.get_mail_task("TASK1") is None
+
+    # Check cascade deletions for recipients and context variables
+    rec_count_after = repo.conn.execute(
+        "SELECT COUNT(*) FROM task_recipients WHERE task_id = ?", ("TASK1",)
+    ).fetchone()[0]
+    var_count_after = repo.conn.execute(
+        "SELECT COUNT(*) FROM task_context_variables WHERE task_id = ?", ("TASK1",)
+    ).fetchone()[0]
+    assert rec_count_after == 0
+    assert var_count_after == 0
+
+    # Delete non-existent task
+    assert repo.delete_mail_task("NON_EXISTENT") is False
