@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from dispatch_worker import PROCESS_TIMEOUT, spawn_claimers, stop
+from dispatch_worker import PROCESS_TIMEOUT, claimers
 from mail_cadence.database import get_connection, init_db
 from mail_cadence.execution_store import (
     DEFAULT_LEASE,
@@ -542,14 +542,10 @@ def test_concurrent_processes_claim_each_task_once(db_path: Path, tmp_path: Path
 
     # Every worker starts at a different task, so all of them collide on every task.
     orders = [task_ids[n:] + task_ids[:n] for n in range(6)]
-    procs = spawn_claimers(db_path, orders, tmp_path)
-    try:
+    with claimers(db_path, orders, tmp_path) as procs:
         for proc in procs:
             proc.join(PROCESS_TIMEOUT)
             assert proc.exitcode == 0
-    finally:
-        for proc in procs:
-            stop(proc)
 
     statuses = [json.loads(path.read_text()) for path in sorted(tmp_path.glob("worker-*.json"))]
     with closing(get_connection(db_path)) as conn:

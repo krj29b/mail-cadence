@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from mail_cadence.database import get_connection, init_db
 from mail_cadence.repository import DatabaseRepository
 from mail_cadence.xml_loader import (
@@ -10,12 +12,13 @@ from mail_cadence.xml_loader import (
 )
 
 
-def test_xml_sqlite_round_trip(tmp_path: Path) -> None:
+def test_xml_sqlite_round_trip(tmp_path: Path, request: pytest.FixtureRequest) -> None:
     initial_tasks_xml = Path("config/samples/tasks.xml")
     initial_schedules_xml = Path("config/samples/schedules.xml")
 
     db_path = tmp_path / "test.db"
     conn = get_connection(db_path)
+    request.addfinalizer(conn.close)
     init_db(conn)
 
     # 1. XML -> SQLite Import
@@ -46,6 +49,7 @@ def test_xml_sqlite_round_trip(tmp_path: Path) -> None:
     # 4. Re-import from exported XML into new DB
     new_db_path = tmp_path / "reimported.db"
     new_conn = get_connection(new_db_path)
+    request.addfinalizer(new_conn.close)
     init_db(new_conn)
 
     reimported_config, reimported_schedules = import_from_xml(

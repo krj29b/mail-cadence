@@ -1,4 +1,9 @@
+import sqlite3
+from collections.abc import Iterator
+from contextlib import closing
 from pathlib import Path
+
+import pytest
 
 from mail_cadence.database import get_connection, init_db
 from mail_cadence.models import (
@@ -17,8 +22,14 @@ from mail_cadence.models import (
 from mail_cadence.repository import DatabaseRepository
 
 
-def test_database_init() -> None:
-    conn = get_connection(":memory:")
+@pytest.fixture
+def conn() -> Iterator[sqlite3.Connection]:
+    """An in-memory database, closed after the test."""
+    with closing(get_connection(":memory:")) as connection:
+        yield connection
+
+
+def test_database_init(conn: sqlite3.Connection) -> None:
     init_db(conn)
     cursor = conn.cursor()
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
@@ -47,8 +58,7 @@ def test_get_connection_pragmas(tmp_path: Path) -> None:
     file_conn.close()
 
 
-def test_repository_save_and_get_schedules() -> None:
-    conn = get_connection(":memory:")
+def test_repository_save_and_get_schedules(conn: sqlite3.Connection) -> None:
     init_db(conn)
     repo = DatabaseRepository(conn)
 
@@ -76,8 +86,7 @@ def test_repository_save_and_get_schedules() -> None:
     assert loaded.schedules[0].allowed_hours[0].start == "08:00"
 
 
-def test_repository_save_and_get_mail_config() -> None:
-    conn = get_connection(":memory:")
+def test_repository_save_and_get_mail_config(conn: sqlite3.Connection) -> None:
     init_db(conn)
     repo = DatabaseRepository(conn)
 
@@ -128,8 +137,7 @@ def test_repository_save_and_get_mail_config() -> None:
     ]
 
 
-def test_repository_log_execution() -> None:
-    conn = get_connection(":memory:")
+def test_repository_log_execution(conn: sqlite3.Connection) -> None:
     init_db(conn)
     repo = DatabaseRepository(conn)
 
@@ -167,8 +175,7 @@ def test_repository_log_execution() -> None:
     assert history[0].status == TaskExecutionStatus.SUCCESS
 
 
-def test_repository_get_report_settings_default_and_saved() -> None:
-    conn = get_connection(":memory:")
+def test_repository_get_report_settings_default_and_saved(conn: sqlite3.Connection) -> None:
     init_db(conn)
     repo = DatabaseRepository(conn)
 
@@ -210,8 +217,7 @@ def test_repository_get_report_settings_default_and_saved() -> None:
     assert loaded_updated.include_full_error_trace is True
 
 
-def test_get_task_execution_states() -> None:
-    conn = get_connection(":memory:")
+def test_get_task_execution_states(conn: sqlite3.Connection) -> None:
     init_db(conn)
     repo = DatabaseRepository(conn)
 
@@ -253,8 +259,7 @@ def test_get_task_execution_states() -> None:
     assert last_status == TaskExecutionStatus.SUCCESS
 
 
-def test_init_db_schema_migration_days_of_week() -> None:
-    conn = get_connection(":memory:")
+def test_init_db_schema_migration_days_of_week(conn: sqlite3.Connection) -> None:
     # Manually create legacy v0.1.0 schema missing days_of_week
     conn.executescript("""
     CREATE TABLE schedules (id TEXT PRIMARY KEY, description TEXT);

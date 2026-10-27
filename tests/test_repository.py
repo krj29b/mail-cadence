@@ -1,3 +1,5 @@
+from collections.abc import Iterator
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -19,11 +21,10 @@ from mail_cadence.repository import DatabaseRepository
 
 
 @pytest.fixture
-def repo(tmp_path: Path) -> DatabaseRepository:
-    db_p = tmp_path / "test_repo.db"
-    conn = get_connection(db_p)
-    init_db(conn)
-    return DatabaseRepository(conn)
+def repo(tmp_path: Path) -> Iterator[DatabaseRepository]:
+    with closing(get_connection(tmp_path / "test_repo.db")) as conn:
+        init_db(conn)
+        yield DatabaseRepository(conn)
 
 
 def test_repository_count_and_pagination_with_filters_and_search(

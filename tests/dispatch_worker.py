@@ -6,10 +6,12 @@ that holds the database and the SMTP connection. ``subprocess`` with a venv
 """
 
 import asyncio
+import contextlib
 import json
 import multiprocessing
 import os
 import sys
+from collections.abc import Iterator
 from contextlib import closing
 from datetime import datetime
 from multiprocessing.process import BaseProcess
@@ -100,8 +102,16 @@ def claim_tasks(
     Path(out_path).write_text(json.dumps(statuses), encoding="utf-8")
 
 
-def spawn_claimers(db_path: Path, task_orders: list[list[str]], out_dir: Path) -> list[BaseProcess]:
-    """One process per task order; all start claiming at the same moment."""
+@contextlib.contextmanager
+def claimers(
+    db_path: Path, task_orders: list[list[str]], out_dir: Path
+) -> Iterator[list[BaseProcess]]:
+    """One process per task order; all start claiming at the same moment.
+
+    The barrier stays referenced here until every process is reaped: on Linux its named
+    POSIX semaphore is unlinked as soon as the parent's object is garbage-collected,
+    and a child that has not unpickled it yet fails with FileNotFoundError.
+    """
     ctx = multiprocessing.get_context("spawn")
     barrier = ctx.Barrier(len(task_orders))
     procs: list[BaseProcess] = [
@@ -114,4 +124,9 @@ def spawn_claimers(db_path: Path, task_orders: list[list[str]], out_dir: Path) -
     ]
     for proc in procs:
         proc.start()
-    return procs
+    try:
+        yield procs
+    finally:
+        for proc in procs:
+            stop(proc)
+        del barrier

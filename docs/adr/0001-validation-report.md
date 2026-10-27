@@ -1,7 +1,7 @@
 # Validation report: ADR 0001 (durable execution state)
 
 - Date: 2026-10-27
-- Code: `master` at `e71bbac`, plus the T02 and T18 tests added with this report
+- Code: `master` at `e71bbac`, plus the T02 and T18 tests added with this report and the CI fixes of section 2a
 - Plan: `plan/gpt6_audyt_01.md`, section 9 ("Warunki zakończenia")
 - Decision record: [0001-execution-state-model.md](0001-execution-state-model.md)
 
@@ -9,7 +9,7 @@ This report lists what was run, with which versions, what came out, and where ea
 
 ## 1. Environment
 
-Local runs: Windows 11 (10.0.26200), Python 3.12.11, SQLite 3.50.4.
+Local runs: Windows 11 (10.0.26200), Python 3.12.11, 3.13.13 and 3.14.4, SQLite 3.50.4; Linux in Docker (`python:3.12-slim`, `3.13-slim`, `3.14-slim`).
 
 | Tool or library | Current | Lowest declared (lowest-versions run) |
 |---|---|---|
@@ -43,7 +43,24 @@ Local runs: Windows 11 (10.0.26200), Python 3.12.11, SQLite 3.50.4.
 | `actionlint .github/workflows/ci.yml`, `zizmor --offline .github/workflows` | 0 | no findings |
 | `python scripts/stress_races.py --iterations 50` | 0 | 50 of 50 iterations passed (18.1-50.7 s each) |
 
-Not verified from this environment: the GitHub Actions results (Linux and Windows, Python 3.12-3.14, lowest versions, wheel and sdist smoke tests). The commits are pushed; their runs are in the repository's Actions tab. The `race-stress` job runs only weekly and on demand and has not run yet.
+## 2a. CI matrix
+
+GitHub Actions failed from `bc07318` to `4b4fa41`; only Windows with Python 3.12, the configuration used locally, passed. Two causes, both in tests:
+
+- Python 3.13 reports an unclosed `sqlite3.Connection` as a `ResourceWarning`, and since `9413421` warnings are errors. 23 older tests in `test_database.py`, `test_repository.py`, `test_roundtrip.py`, `test_window_state_dry_run_settings.py` and `test_xml_loader.py` never closed their connection. They now close it through fixtures or finalisers. The leaks were attributed to their tests by a local plugin that runs `gc.collect()` after every test (not committed).
+- On Linux the multi-process claim test lost its `multiprocessing` barrier: the parent let it be garbage-collected, which unlinks the named POSIX semaphore before the spawned children open it (`FileNotFoundError`). `tests/dispatch_worker.claimers` now keeps it until the processes are reaped.
+
+Every job of the matrix was then reproduced locally with exit code 0:
+
+| CI job | Reproduced on | Result |
+|---|---|---|
+| Tests, Linux, Python 3.12 (with coverage) | Docker `python:3.12-slim` | 424 passed, coverage 95.9% |
+| Tests, Linux, Python 3.13 / 3.14 | Docker `python:3.13-slim` / `3.14-slim` | 424 passed each |
+| Tests, Windows, Python 3.12 / 3.13 / 3.14 | local venvs | 424 passed each; on 3.13 also with `gc.collect()` after every test |
+| Lowest declared versions | Docker `python:3.12-slim`, `uv --resolution lowest-direct` | 424 passed |
+| Build & smoke test (wheel and sdist) | Docker `python:3.12-slim`, hash-pinned build tools | `twine check` passed, both smoke tests passed |
+
+The GitHub runs of the fixed commit are still to be checked in the Actions tab. The `race-stress` job runs only weekly and on demand and has not run on GitHub yet.
 
 ## 3. Invariants
 
@@ -152,5 +169,5 @@ One mutation survives on purpose: removing the owner check from `record_attempt_
 - Exactly-once delivery is impossible between SQLite and SMTP; the system guarantees at-most-once whenever the outcome is ambiguous and makes such cases visible (`UNKNOWN`, exit code 3, the Executions pages).
 - Rate limits are per window occurrence and per process, not for the SMTP account (ADR D18).
 - "Send again" on an `UNKNOWN` recipient works for scheduled executions while their window occurrence is open; a manual send is repeated with the Run button.
-- The GitHub Actions results are not part of this report (section 2); the first `race-stress` run on GitHub runners is still to come, and Linux has not been run locally.
+- The CI matrix was reproduced locally (section 2a); the GitHub runs of the fixed commit and the first `race-stress` run on GitHub runners are still to be checked.
 - The 22 invalid Hypothesis examples are rejected sequences, not failures; they are listed so that a change in that number is noticed.

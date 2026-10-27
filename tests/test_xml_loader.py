@@ -1,3 +1,6 @@
+import sqlite3
+from collections.abc import Iterator
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -22,6 +25,13 @@ from mail_cadence.xml_loader import (
     load_work_schedules,
     validate_xml_configs,
 )
+
+
+@pytest.fixture
+def conn() -> Iterator[sqlite3.Connection]:
+    """An in-memory database, closed after the test."""
+    with closing(get_connection(":memory:")) as connection:
+        yield connection
 
 
 def test_load_sample_xml_files(tmp_path: Path) -> None:
@@ -95,8 +105,7 @@ def test_invalid_schedule_reference(tmp_path: Path) -> None:
         validate_xml_configs(mail_config, schedules)
 
 
-def test_import_and_export_xml(tmp_path: Path) -> None:
-    conn = get_connection(":memory:")
+def test_import_and_export_xml(tmp_path: Path, conn: sqlite3.Connection) -> None:
     init_db(conn)
 
     tasks_path = "config/samples/tasks.xml"
@@ -125,8 +134,8 @@ def test_import_and_export_xml(tmp_path: Path) -> None:
 
 def test_import_from_xml_replace_rollback_on_error(
     monkeypatch: pytest.MonkeyPatch,
+    conn: sqlite3.Connection,
 ) -> None:
-    conn = get_connection(":memory:")
     init_db(conn)
 
     tasks_path = "config/samples/tasks.xml"

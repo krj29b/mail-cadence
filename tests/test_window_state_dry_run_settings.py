@@ -1,4 +1,6 @@
 import sqlite3
+from collections.abc import Iterator
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -54,8 +56,9 @@ def db_path(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def repo(db_path: Path) -> DatabaseRepository:
-    return DatabaseRepository(get_connection(db_path))
+def repo(db_path: Path) -> Iterator[DatabaseRepository]:
+    with closing(get_connection(db_path)) as conn:
+        yield DatabaseRepository(conn)
 
 
 # --- N1: saving a task keeps the window state unless it changed ---------------------------
