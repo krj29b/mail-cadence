@@ -14,8 +14,9 @@ Controls (set before the client sends the command):
 - ``drop_at``: (command, n) - close the connection without replying to the n-th
   MAIL, RCPT or DATA command (DATA: before 354, so no body is sent);
 - ``drop_after_data``: close the connection without replying after the n-th body;
-- ``hold_at``: (command, n) - before replying to the n-th MAIL command, or after the
-  n-th body, wait until ``release()``; ``held`` is set when that point is reached.
+- ``hold_at``: (command, n) - before the greeting of the n-th connection (CONNECT),
+  before replying to the n-th MAIL command, or after the n-th body, wait until
+  ``release()``; ``held`` is set when that point is reached.
 """
 
 import asyncio
@@ -29,7 +30,7 @@ from types import TracebackType
 from typing import Literal, Self
 
 Command = Literal["MAIL", "RCPT", "DATA"]
-HoldCommand = Literal["MAIL", "DATA"]
+HoldCommand = Literal["CONNECT", "MAIL", "DATA"]
 
 HOLD_TIMEOUT = 60.0
 _ADDRESS_RE = re.compile(r"<([^>]*)>")
@@ -95,6 +96,7 @@ class _Session:
         await self.writer.drain()
 
     async def run(self) -> None:
+        await self.sink.pause_if_held("CONNECT")
         await self.reply(b"220 127.0.0.1 ESMTP sink\r\n")
         while line_bytes := await self.reader.readline():
             line = line_bytes.decode("utf-8", errors="replace").rstrip("\r\n")
@@ -168,7 +170,7 @@ class SMTPSink:
         self._release = threading.Event()
         self._lock = threading.Lock()
         self._counts: dict[str, int] = {"MAIL": 0, "RCPT": 0, "DATA": 0, "session": 0}
-        self._held_counts: dict[str, int] = {"MAIL": 0, "DATA": 0}
+        self._held_counts: dict[str, int] = {"CONNECT": 0, "MAIL": 0, "DATA": 0}
         self._deliveries: list[Delivery] = []
         self._rcpt_attempts: list[RcptAttempt] = []
         self._commands: list[tuple[int, str]] = []

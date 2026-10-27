@@ -8,6 +8,7 @@ that holds the database and the SMTP connection. ``subprocess`` with a venv
 import asyncio
 import json
 import multiprocessing
+import os
 import sys
 from contextlib import closing
 from datetime import datetime
@@ -22,9 +23,39 @@ from mail_cadence.pipeline import DispatchOptions, run_dispatch
 from mail_cadence.repository import DatabaseRepository
 
 PROCESS_TIMEOUT = 60.0
+# Exit code of a worker that died on purpose at its crash point.
+CRASH_EXIT = 86
+_CRASH_TARGETS = {
+    "after_claim": "claim_execution",
+    "after_smtp": "record_attempt_result",
+    "after_release": "release_execution",
+}
 
 
-def run_batch(db_path: str, template_dir: str, port: int, ref_dt: str) -> None:
+def _install_crash_point(point: str | None) -> None:
+    """Make this process die abruptly (no cleanup, nothing more committed) at ``point``.
+
+    after_claim: right after the claim is committed, before any attempt starts;
+    after_smtp: after the SMTP reply, instead of storing the result;
+    after_release: after the final state is committed, before the run ends.
+    """
+    if point is None:
+        return
+    target = _CRASH_TARGETS[point]
+    original = getattr(DatabaseRepository, target)
+
+    def crashing(self: DatabaseRepository, *args: object, **kwargs: object) -> None:
+        if point != "after_smtp":
+            original(self, *args, **kwargs)
+        os._exit(CRASH_EXIT)
+
+    setattr(DatabaseRepository, target, crashing)
+
+
+def run_batch(
+    db_path: str, template_dir: str, port: int, ref_dt: str, crash_at: str | None = None
+) -> None:
+    _install_crash_point(crash_at)
     settings = Settings(_env_file=None, smtp_host="127.0.0.1", smtp_port=port)  # type: ignore[call-arg]
     options = DispatchOptions(
         db_path=db_path, template_dir=template_dir, ref_dt=datetime.fromisoformat(ref_dt)
@@ -32,11 +63,13 @@ def run_batch(db_path: str, template_dir: str, port: int, ref_dt: str) -> None:
     sys.exit(asyncio.run(run_dispatch(options, settings)))
 
 
-def spawn_batch(db_path: Path, port: int, ref_dt: datetime) -> BaseProcess:
+def spawn_batch(
+    db_path: Path, port: int, ref_dt: datetime, crash_at: str | None = None
+) -> BaseProcess:
     ctx = multiprocessing.get_context("spawn")
     proc = ctx.Process(
         target=run_batch,
-        args=(str(db_path), str(db_path.parent), port, ref_dt.isoformat()),
+        args=(str(db_path), str(db_path.parent), port, ref_dt.isoformat(), crash_at),
         daemon=True,
     )
     proc.start()
