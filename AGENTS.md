@@ -11,7 +11,7 @@ Before declaring code readiness, run all of the following tools. None of them ma
 5. `xenon --max-absolute B --max-modules B --max-average B src` – no function or method may have a complexity rating worse than `B` (`radon cc src -a -nb` only reports and never fails).
 6. `pip-audit --skip-editable` – no known vulnerabilities in dependencies.
 
-`make quality-gate` runs all of them; CI (`.github/workflows/ci.yml`) runs the same targets, the tests on Linux and Windows with Python 3.12–3.14 and with the lowest declared dependency versions, and `scripts/smoke_test_wheel.py` against the built wheel and sdist. When raising a dependency's minimum, keep `pyproject.toml` lower bounds honest: the lowest-versions job installs exactly those.
+`make quality-gate` runs all of them; CI (`.github/workflows/ci.yml`) runs the same targets, the tests on Linux and Windows with Python 3.12–3.14 and with the lowest declared dependency versions, and `scripts/smoke_test_wheel.py` against the built wheel and sdist. In the weekly run and on demand (`workflow_dispatch`) the `race-stress` job runs the race and failure tests 50 times per OS through `scripts/stress_races.py`; a test that uses several processes, threads or held SMTP sessions belongs in its `RACE_TESTS`. When raising a dependency's minimum, keep `pyproject.toml` lower bounds honest: the lowest-versions job installs exactly those.
 
 **GitHub Actions rules** (enforced by the zizmor job; run `make workflows` locally):
 * Pin every action to a full commit SHA with a `# vX.Y.Z` comment; never a tag or branch.
