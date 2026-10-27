@@ -7,6 +7,7 @@ never the number of mailer calls or the code's own summary of the run.
 """
 
 import asyncio
+import sqlite3
 import threading
 from collections.abc import Iterator
 from contextlib import closing
@@ -14,6 +15,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
 from dispatch_worker import PROCESS_TIMEOUT, spawn_batch, stop
 from mail_cadence.database import get_connection, init_db
@@ -35,6 +37,7 @@ from mail_cadence.pipeline import (
     run_dispatch,
 )
 from mail_cadence.repository import DatabaseRepository
+from mail_cadence.web import create_app
 from smtp_sink import SMTPSink
 
 # Every run in a test uses the same instant, inside the 06:00-18:00 UTC window.
@@ -67,14 +70,18 @@ def _task(recipients: list[str], *, subject: str = "Version 1", max_retries: int
     )
 
 
-def _prepare(tmp_path: Path, task: MailTask, *, report: bool = False) -> Path:
-    """Database with one 06:00-18:00 UTC window, one task and its template."""
+def _prepare(
+    tmp_path: Path, task: MailTask, *, report: bool = False, all_day: bool = False
+) -> Path:
+    """Database with one 06:00-18:00 UTC window (or the whole day), one task and its template."""
     (tmp_path / "body.html.j2").write_text("<p>Hello {{ name | default('there') }}</p>")
     db_path = tmp_path / "cadence.db"
     with closing(get_connection(db_path)) as conn:
         init_db(conn)
         repo = DatabaseRepository(conn)
-        window = HourWindow(start="06:00", end="18:00")
+        window = HourWindow(
+            start="00:00" if all_day else "06:00", end="24:00" if all_day else "18:00"
+        )
         repo.save_work_schedules(
             WorkSchedules(
                 timezone="UTC", schedules=[Schedule(id="WORKDAY", allowed_hours=[window])]
@@ -264,3 +271,63 @@ def test_t13_failed_report_is_retried_without_resending_tasks(
 
     assert sink.accepted_count(A) == 1
     assert sink.accepted_count(REPORT_TO) == 1
+
+
+# --- T02: the CLI and two independent web panels at once -------------------------------
+
+
+def test_t02_cli_and_two_panels_send_once(tmp_path: Path, sink: SMTPSink) -> None:
+    """Two panels (two DispatchRunner instances) and the CLI dispatch the same task
+    while the first send is inside SMTP: the claim in the database alone keeps it to
+    one send, without any lock shared in memory."""
+    db_path = _prepare(tmp_path, _task([A, B]), all_day=True)
+    settings = _settings(sink.port)
+    apps = [
+        create_app(
+            db_path=db_path, template_dir=tmp_path, settings=settings, allow_insecure_no_auth=True
+        )
+        for _ in range(2)
+    ]
+    clients = [TestClient(app) for app in apps]
+    sink.hold_at = ("DATA", 1)
+
+    assert clients[0].post("/dispatch/run", data={"dry_run": "false"}).status_code == 202
+    sink.wait_held()
+    try:
+        assert clients[1].post("/dispatch/run", data={"dry_run": "false"}).status_code == 202
+        second = apps[1].state.dispatch_runner.wait(PROCESS_TIMEOUT)
+        cli = asyncio.run(
+            run_dispatch(DispatchOptions(db_path=db_path, template_dir=tmp_path), settings)
+        )
+    finally:
+        sink.release()
+        first = apps[0].state.dispatch_runner.wait(PROCESS_TIMEOUT)
+
+    assert (sink.accepted_count(A), sink.accepted_count(B)) == (1, 1)
+    assert len(sink.sessions_with_mail()) == 1, "the others never started SMTP"
+    assert (first.exit_code, second.exit_code, cli) == (EXIT_OK, EXIT_OK, EXIT_OK)
+
+
+# --- T18: no transaction stays open during SMTP ----------------------------------------
+
+
+def test_t18_configuration_can_be_saved_while_smtp_is_in_progress(
+    tmp_path: Path, sink: SMTPSink
+) -> None:
+    db_path = _prepare(tmp_path, _task([A]))
+    sink.hold_at = ("DATA", 1)
+    worker = threading.Thread(target=lambda: _dispatch(db_path, sink.port))
+    worker.start()
+    try:
+        sink.wait_held()
+        # A one-second lock timeout: a transaction left open during SMTP would fail this.
+        with closing(sqlite3.connect(db_path, timeout=1.0)) as conn:
+            conn.row_factory = sqlite3.Row
+            DatabaseRepository(conn).save_single_schedule(
+                Schedule(id="OTHER", allowed_hours=[HourWindow(start="00:00", end="01:00")])
+            )
+        assert worker.is_alive(), "the save finished while the send was still held"
+    finally:
+        sink.release()
+        worker.join(PROCESS_TIMEOUT)
+    assert len(sink.deliveries) == 1
