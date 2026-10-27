@@ -1,9 +1,12 @@
+import base64
+import binascii
 import functools
 import json
 import logging
 import math
 import secrets
 import sqlite3
+import uuid
 from collections.abc import Awaitable, Callable, Generator
 from contextlib import closing
 from dataclasses import dataclass
@@ -24,6 +27,7 @@ from pydantic import ValidationError
 from mail_cadence import __version__
 from mail_cadence.database import get_connection, init_db
 from mail_cadence.dispatch_jobs import DispatchBusyError, DispatchJob, DispatchRunner, JobWork
+from mail_cadence.execution_store import ExecutionBusyError, Resolution
 from mail_cadence.login_throttle import LoginThrottle
 from mail_cadence.mailer import (
     INTERNAL_TEMPLATES,
@@ -500,6 +504,8 @@ def dashboard(
             "request": request,
             "active_page": "dashboard",
             "stats": stats,
+            "review_count": repo.count_executions_needing_review(),
+            "report_issue_count": repo.count_unconfirmed_reports(),
             "job": _get_runner(request).current,
             **logs_ctx,
         },
@@ -654,6 +660,10 @@ def _render_tasks_page(
             "default_sender": _get_settings(request).smtp_user or "",
             "available_templates": _discover_available_templates(template_dir),
             "task_statuses": _get_tasks_window_status(repo, tasks, work_schedules),
+            "executions": repo.latest_execution_by_task(),
+            # One key per task and page render: a double click or a repeated request
+            # reports the first send instead of sending again (ADR 0001, D7).
+            "run_keys": {task.id: uuid.uuid4().hex for task in tasks},
             "edit_task": edit_task,
             "message": message,
         },
@@ -968,6 +978,96 @@ def run_single_task(
 
     job = _start_job(request, DispatchJob(kind="task", task_id=task_id), work)
     return _render_dispatch_status(request, job, status_code=status.HTTP_202_ACCEPTED)
+
+
+@router.get("/executions", response_class=HTMLResponse)
+def list_executions_page(
+    request: Request,
+    state: str | None = Query(None, max_length=32),
+    repo: DatabaseRepository = Depends(get_repo),
+) -> Response:
+    return templates.TemplateResponse(
+        request=request,
+        name="executions.html",
+        context={
+            "active_page": "executions",
+            "executions": repo.list_executions(state=state or None),
+            "state_filter": state,
+            "reports": repo.list_report_deliveries(),
+        },
+    )
+
+
+@router.get("/executions/{execution_id}", response_class=HTMLResponse)
+def execution_page(
+    execution_id: int,
+    request: Request,
+    repo: DatabaseRepository = Depends(get_repo),
+) -> Response:
+    return _render_execution_page(request, repo, execution_id)
+
+
+def _render_execution_page(
+    request: Request, repo: DatabaseRepository, execution_id: int, message: str | None = None
+) -> Response:
+    detail = repo.get_execution_detail(execution_id)
+    if detail is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Execution {execution_id} not found",
+        )
+    return templates.TemplateResponse(
+        request=request,
+        name="execution.html",
+        context={"active_page": "executions", "execution": detail, "message": message},
+    )
+
+
+def _panel_actor(request: Request) -> str:
+    """Who resolved something: the Basic Auth user name, never the password."""
+    scheme, _, value = request.headers.get("authorization", "").partition(" ")
+    if scheme.lower() == "basic":
+        try:
+            user = base64.b64decode(value, validate=True).decode().split(":", 1)[0]
+        except (binascii.Error, UnicodeDecodeError):
+            user = ""
+        if user:
+            return f"panel:{user}"
+    return "panel"
+
+
+@router.post("/executions/{execution_id}/resolve", response_class=HTMLResponse)
+async def resolve_execution_recipient(
+    execution_id: int,
+    request: Request,
+    repo: DatabaseRepository = Depends(get_repo),
+) -> Response:
+    """Operator decision for an UNKNOWN recipient (ADR 0001, D12)."""
+    if repo.get_execution_detail(execution_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Execution {execution_id} not found",
+        )
+    form = await request.form()
+    recipient = str(form.get("recipient", ""))
+    try:
+        attempt_raw = str(form.get("attempt_id", "")).strip()
+        state = repo.resolve_unknown(
+            execution_id,
+            recipient,
+            Resolution(str(form.get("resolution", ""))),
+            actor=_panel_actor(request),
+            reason=str(form.get("reason", "")),
+            attempt_id=int(attempt_raw) if attempt_raw else None,
+        )
+    except ExecutionBusyError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=f"Validation Error: {exc}"
+        ) from exc
+    message = f"Decision for {recipient} recorded; execution is now {state}."
+    return _render_execution_page(request, repo, execution_id, message)
 
 
 @router.get("/dispatch/status", response_class=HTMLResponse)

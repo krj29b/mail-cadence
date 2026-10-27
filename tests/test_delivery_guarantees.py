@@ -1,8 +1,8 @@
 """Reproductions of the delivery-guarantee defects (docs/adr/0001-execution-state-model.md).
 
-Each ``xfail(strict=True)`` test states the behaviour required by the ADR and fails on
-the current code. Implementing the ADR makes it pass; strict mode then fails the run
-until the marker is removed. The oracle is the SMTP sink's log of accepted messages,
+Each test states a behaviour the ADR requires. They were added with
+``xfail(strict=True)`` before the fix (stage 1) and lost the marker when the stage that
+implements the behaviour made them pass. The oracle is the SMTP sink's log of accepted messages,
 never the number of mailer calls or the code's own summary of the run.
 """
 
@@ -43,7 +43,6 @@ A = "a@example.com"
 B = "b@example.com"
 REPORT_TO = "report@example.com"
 TASK_ID = "TASK-1"
-XFAIL_ADR = "requires the execution state model of ADR 0001"
 
 
 @pytest.fixture
@@ -253,7 +252,6 @@ def test_t08_recreated_task_is_a_new_identity(tmp_path: Path, sink: SMTPSink) ->
 # --- T13: the report is retried on its own ---------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason=XFAIL_ADR)
 def test_t13_failed_report_is_retried_without_resending_tasks(
     tmp_path: Path, sink: SMTPSink
 ) -> None:

@@ -40,6 +40,10 @@
             <i data-lucide="mail" class="w-4 h-4"></i>
             <span>Tasks</span>
           </a>
+          <a href="/executions" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-all duration-150 {% if active_page == 'executions' %}bg-slate-800/80 text-white border-l-2 border-indigo-500 font-medium shadow-sm{% else %}text-slate-400 hover:text-slate-200 hover:bg-slate-800/40 border-l-2 border-transparent{% endif %}">
+            <i data-lucide="list-checks" class="w-4 h-4"></i>
+            <span>Executions</span>
+          </a>
           <a href="/schedules" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-all duration-150 {% if active_page == 'schedules' %}bg-slate-800/80 text-white border-l-2 border-indigo-500 font-medium shadow-sm{% else %}text-slate-400 hover:text-slate-200 hover:bg-slate-800/40 border-l-2 border-transparent{% endif %}">
             <i data-lucide="calendar-clock" class="w-4 h-4"></i>
             <span>Schedules</span>

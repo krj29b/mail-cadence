@@ -1,0 +1,120 @@
+{% extends "layout.html" %}
+{% from "_macros.html" import state_badge %}
+{% block title %}Execution #{{ execution.execution_id }} - MailCadence Admin{% endblock %}
+{% block content %}
+<div class="pb-2 border-b border-slate-800">
+  <a href="/executions" class="text-xs text-slate-400 underline">All executions</a>
+  <h1 class="text-2xl font-bold tracking-tight text-white flex items-center gap-2 mt-1">
+    <i data-lucide="list-checks" class="w-6 h-6 text-indigo-400"></i>
+    Execution #{{ execution.execution_id }} {{ state_badge(execution.state) }}
+  </h1>
+  <p class="text-xs text-slate-400 mt-1 font-mono">
+    Task {{ execution.task_id }}{% if execution.task_deleted_at %} (deleted){% endif %}
+    &middot; version {{ execution.task_version }} &middot; generation {{ execution.dispatch_generation }}
+    &middot; {{ execution.window_key }}
+    {% if execution.legacy %}&middot; converted from the old last_run/last_status{% endif %}
+  </p>
+  <p class="text-xs text-slate-500 mt-1 font-mono">
+    Message-ID: {{ execution.message_id or "not rendered" }}
+    {% if execution.owner %}&middot; owner {{ execution.owner }} until {{ execution.lease_expires_at | utc_time }}{% endif %}
+  </p>
+</div>
+
+{% if message %}
+<div class="alert-success flex items-center gap-2">
+  <i data-lucide="check-circle" class="w-4 h-4 shrink-0"></i>
+  <span>{{ message }}</span>
+</div>
+{% endif %}
+
+<div class="bg-slate-900 border border-slate-800 rounded-xl shadow-sm overflow-x-auto">
+  <table class="w-full text-left text-xs">
+    <thead class="bg-slate-950/50 text-slate-400 uppercase tracking-wider text-[10px] border-b border-slate-800">
+      <tr>
+        <th class="py-3 px-4">Recipient</th>
+        <th class="py-3 px-4">Type</th>
+        <th class="py-3 px-4">State</th>
+        <th class="py-3 px-4">Attempts</th>
+        <th class="py-3 px-4">Last reply</th>
+        <th class="py-3 px-4">Decision</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-slate-800/50 text-slate-300">
+      {% for r in execution.recipients %}
+      <tr>
+        <td class="py-3 px-4 font-mono text-white">{{ r.display_address }}</td>
+        <td class="py-3 px-4 font-mono text-slate-400">{{ r.recipient_type }}</td>
+        <td class="py-3 px-4">{{ state_badge(r.state) }}</td>
+        <td class="py-3 px-4 font-mono text-slate-400">{{ r.attempt_count }} / {{ r.max_attempts }}</td>
+        <td class="py-3 px-4 font-mono text-slate-400">{% if r.last_code %}{{ r.last_code }} {% endif %}{{ r.last_error or "" }}</td>
+        <td class="py-3 px-4">
+          {% if r.state == 'UNKNOWN' %}
+          <form action="/executions/{{ execution.execution_id }}/resolve" method="POST" class="flex flex-wrap items-center gap-2">
+            <input type="hidden" name="recipient" value="{{ r.envelope_address }}">
+            <input type="hidden" name="attempt_id" value="{{ r.last_attempt_id or '' }}">
+            <select name="resolution" class="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200">
+              <option value="accepted">Delivered (server log shows it)</option>
+              <option value="failed">Not delivered</option>
+              <option value="retry">Send again (old worker is stopped)</option>
+            </select>
+            <input type="text" name="reason" required maxlength="500" placeholder="Reason / evidence"
+                   class="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200 w-56">
+            <button type="submit" class="inline-flex items-center gap-1 bg-slate-800 hover:bg-slate-700 text-amber-400 border border-slate-700 px-2 py-1 rounded text-xs">
+              <i data-lucide="check-circle-2" class="w-3 h-3"></i>
+              <span>Resolve (attempt #{{ r.last_attempt_id or "?" }})</span>
+            </button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+  <div class="space-y-2">
+    <h2 class="text-sm font-semibold text-white">Attempts</h2>
+    <div class="bg-slate-900 border border-slate-800 rounded-xl shadow-sm overflow-x-auto">
+      <table class="w-full text-left text-xs">
+        <thead class="bg-slate-950/50 text-slate-400 uppercase tracking-wider text-[10px] border-b border-slate-800">
+          <tr><th class="py-2 px-3">#</th><th class="py-2 px-3">State</th><th class="py-2 px-3">Recipients</th><th class="py-2 px-3">Started</th><th class="py-2 px-3">Finished</th></tr>
+        </thead>
+        <tbody class="divide-y divide-slate-800/50 text-slate-300">
+          {% for a in execution.attempts %}
+          <tr>
+            <td class="py-2 px-3 font-mono">{{ a.attempt_no }} <span class="text-slate-500">(id {{ a.attempt_id }}, token {{ a.fencing_token }})</span></td>
+            <td class="py-2 px-3">{{ state_badge(a.state) }}</td>
+            <td class="py-2 px-3 font-mono text-slate-400">{{ a.recipients | join(', ') }}</td>
+            <td class="py-2 px-3 font-mono text-slate-400 whitespace-nowrap">{{ a.started_at | utc_time }}</td>
+            <td class="py-2 px-3 font-mono text-slate-400 whitespace-nowrap">{{ a.finished_at | utc_time }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="5" class="py-4 px-3 text-center text-slate-500">No attempts.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div class="space-y-2">
+    <h2 class="text-sm font-semibold text-white">Events</h2>
+    <div class="bg-slate-900 border border-slate-800 rounded-xl shadow-sm overflow-x-auto">
+      <table class="w-full text-left text-xs">
+        <thead class="bg-slate-950/50 text-slate-400 uppercase tracking-wider text-[10px] border-b border-slate-800">
+          <tr><th class="py-2 px-3">When</th><th class="py-2 px-3">Event</th><th class="py-2 px-3">By</th><th class="py-2 px-3">Details</th></tr>
+        </thead>
+        <tbody class="divide-y divide-slate-800/50 text-slate-300">
+          {% for ev in execution.events %}
+          <tr>
+            <td class="py-2 px-3 font-mono text-slate-400 whitespace-nowrap">{{ ev.occurred_at | utc_time }}</td>
+            <td class="py-2 px-3 font-mono">{{ ev.kind }}</td>
+            <td class="py-2 px-3 font-mono text-slate-400">{{ ev.actor or "" }}</td>
+            <td class="py-2 px-3 font-mono text-slate-400">{{ ev.reason or "" }} {{ ev.details_json or "" }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}

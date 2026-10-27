@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
 from mail_cadence.database import get_connection, init_db
+from mail_cadence.execution_store import ClaimRequest
 from mail_cadence.models import (
     BodyTemplate,
     ContextVar,
@@ -40,6 +41,9 @@ PAGES = [
     "/settings",
     "/dashboard/logs",
     "/dispatch/status",
+    "/executions",
+    "/executions?state=NEEDS_REVIEW",
+    "/executions/1",
 ]
 
 
@@ -65,6 +69,14 @@ def client(tmp_path: Path) -> TestClient:
             context_variables=[ContextVar(name="name", value=EVIL_VALUE)],
         )
     )
+    # Execution 1 of the evil task needs review: its page shows the resolve form.
+    repo.start_run("run-1", "cli")
+    claim = repo.claim_execution(ClaimRequest(EVIL_ID, f"{EVIL_ID}@key", "run-1", "w")).claim
+    assert claim is not None
+    attempt = repo.start_attempt(claim)
+    assert attempt is not None
+    repo.record_attempt_result(claim, attempt, {})
+    repo.release_execution(claim)
     conn.close()
     (tmp_path / "t.html").write_text("<p>{{ name }}</p><script>alert(1)</script>")
     app = create_app(db_path=db_path, template_dir=tmp_path, allow_insecure_no_auth=True)
@@ -149,3 +161,10 @@ def test_static_dir_holds_no_unexpected_files() -> None:
     files = [p for p in PACKAGE_STATIC_DIR.rglob("*") if p.is_file()]
     assert files
     assert {p.suffix for p in files} <= allowed
+
+
+def test_execution_pages_show_the_malicious_id_only_as_text(client: TestClient) -> None:
+    for path in ("/executions", "/executions/1"):
+        html = client.get(path).text
+        assert "x&#39;);alert(document.domain);(&#39;" in html, path
+        assert "alert(document.domain);('" not in html, path

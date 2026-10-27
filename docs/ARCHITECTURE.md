@@ -332,7 +332,8 @@ Duplicate dispatches are prevented by durable execution state ([ADR 0001](adr/00
 - Saving a changed task starts a new dispatch generation (the window can be sent again with the new version) unless `reset_window_state=False`; "Allow Resend" (`POST /tasks/{id}/reset-window`) starts a new generation without a new version.
 - `tasks.last_run` / `last_status` remain a projection for the UI and the XML export; only an execution of the task's current version updates them.
 - A manual send (`POST /tasks/{id}/run`) ignores the window and uses the key `manual:{idempotency_key}`: the same key reports the earlier send instead of sending again.
-- The status report is sent only when at least one task was executed (success, partial or failed) and `report_settings` is configured.
+- The status report is sent only when at least one task was executed (success, partial, failed or unknown) and `report_settings` is configured. It is stored in `report_deliveries` (`report_store.py`); every run first retries unconfirmed reports from the stored bytes (one attempt per run, three in total, never after a 5xx or an unknown outcome), then sends its own.
+- The panel's Executions pages (`/executions`, `/executions/{id}`) show this state and record operator decisions for `UNKNOWN` recipients (`POST /executions/{id}/resolve`, `DatabaseRepository.resolve_unknown`).
 
 ---
 

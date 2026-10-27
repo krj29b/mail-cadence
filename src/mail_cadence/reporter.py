@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from email.message import EmailMessage
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -11,7 +12,9 @@ from jinja2 import Environment, FileSystemLoader, TemplateError, select_autoesca
 
 from mail_cadence.mailer import (
     AUTOESCAPE_EXTENSIONS,
+    SNAPSHOT_POLICY,
     AsyncMailer,
+    RenderedMessage,
     new_email_message,
     set_html_body,
 )
@@ -108,24 +111,37 @@ class ReportGenerator:
 
         return html_content, txt_content
 
-    async def send_report(
-        self,
-        report: BatchSummaryReport,
-        report_settings: ReportSettings,
-        mailer: AsyncMailer,
-    ) -> bool:
+    def build_report_message(
+        self, report: BatchSummaryReport, report_settings: ReportSettings, smtp_user: str | None
+    ) -> tuple[str, EmailMessage]:
+        """The report message and its envelope sender."""
         html_body, txt_body = self.render_report(report, report_settings)
-        sender_addr = (
-            report_settings.sender or mailer.settings.smtp_user or "mail-cadence-daemon@localhost"
-        )
-
+        sender_addr = report_settings.sender or smtp_user or "mail-cadence-daemon@localhost"
         msg = new_email_message(
             subject=f"{report_settings.subject_prefix} Task Execution Summary",
             sender=sender_addr,
             to=[report_settings.recipient],
         )
         set_html_body(msg, html_body, plain_body=txt_body)
+        return sender_addr, msg
 
+    def render_report_message(
+        self, report: BatchSummaryReport, report_settings: ReportSettings, smtp_user: str | None
+    ) -> RenderedMessage:
+        """The report serialised once for durable delivery (ADR 0001, D14)."""
+        _, msg = self.build_report_message(report, report_settings, smtp_user)
+        return RenderedMessage(str(msg["Message-ID"]), msg.as_bytes(policy=SNAPSHOT_POLICY))
+
+    async def send_report(
+        self,
+        report: BatchSummaryReport,
+        report_settings: ReportSettings,
+        mailer: AsyncMailer,
+    ) -> bool:
+        """Send without storing anything; used by dry runs, which only log it."""
+        sender_addr, msg = self.build_report_message(
+            report, report_settings, mailer.settings.smtp_user
+        )
         success, err, _ = await mailer.send_single_message(
             msg=msg,
             sender=sender_addr,

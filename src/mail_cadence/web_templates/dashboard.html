@@ -36,6 +36,18 @@
 </div>
 {% endif %}
 {% include "_dispatch_status.html" %}
+{% if review_count %}
+<div class="alert-error flex items-center gap-2">
+  <i data-lucide="alert-circle" class="w-4 h-4 shrink-0"></i>
+  <span>{{ review_count }} execution{{ "s" if review_count != 1 }} need{{ "" if review_count != 1 else "s" }} review: the outcome of a delivery is unknown and nothing is resent automatically. <a href="/executions?state=NEEDS_REVIEW" class="underline">Review</a></span>
+</div>
+{% endif %}
+{% if report_issue_count %}
+<div class="alert-error flex items-center gap-2">
+  <i data-lucide="alert-circle" class="w-4 h-4 shrink-0"></i>
+  <span>{{ report_issue_count }} status report{{ "s are" if report_issue_count != 1 else " is" }} not confirmed yet. <a href="/executions" class="underline">Details</a></span>
+</div>
+{% endif %}
 {% if error %}
 <div class="alert-error flex items-center gap-2">
   <i data-lucide="alert-circle" class="w-4 h-4 shrink-0"></i>
@@ -120,7 +132,9 @@
         <option value="SUCCESS" {% if status_filter == 'SUCCESS' %}selected{% endif %}>SUCCESS</option>
         <option value="PARTIAL" {% if status_filter == 'PARTIAL' %}selected{% endif %}>PARTIAL</option>
         <option value="FAILED" {% if status_filter == 'FAILED' %}selected{% endif %}>FAILED</option>
+        <option value="UNKNOWN" {% if status_filter == 'UNKNOWN' %}selected{% endif %}>UNKNOWN</option>
         <option value="SKIPPED_SCHEDULE" {% if status_filter == 'SKIPPED_SCHEDULE' %}selected{% endif %}>SKIPPED_SCHEDULE</option>
+        <option value="SKIPPED_BUSY" {% if status_filter == 'SKIPPED_BUSY' %}selected{% endif %}>SKIPPED_BUSY</option>
       </select>
 
       <!-- Task ID Filter Dropdown -->

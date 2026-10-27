@@ -6,7 +6,8 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 
 from mail_cadence.database import sync_definitions, to_utc_iso
-from mail_cadence.execution_store import Clock, ExecutionStoreMixin
+from mail_cadence.execution_store import Clock
+from mail_cadence.execution_views import ExecutionViewsMixin
 from mail_cadence.models import (
     BodyTemplate,
     ContextVar,
@@ -20,14 +21,15 @@ from mail_cadence.models import (
     TaskExecutionStatus,
     WorkSchedules,
 )
+from mail_cadence.report_store import ReportStoreMixin
 
 _SKIPPED_STATUSES = frozenset(
     {TaskExecutionStatus.SKIPPED_SCHEDULE, TaskExecutionStatus.SKIPPED_BUSY}
 )
 
 
-class DatabaseRepository(ExecutionStoreMixin):
-    """All database access. Execution-state methods come from ``ExecutionStoreMixin``.
+class DatabaseRepository(ReportStoreMixin, ExecutionViewsMixin):
+    """All database access. Execution and report state come from ``ReportStoreMixin``.
 
     ``clock`` supplies the wall-clock time for leases and events (tests pass a fake).
     """

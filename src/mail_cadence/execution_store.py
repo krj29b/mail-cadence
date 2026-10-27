@@ -726,13 +726,15 @@ class ExecutionStoreMixin:
         *,
         actor: str,
         reason: str,
+        attempt_id: int | None = None,
     ) -> str:
         """Resolve an UNKNOWN recipient (D12) and return the execution's new state.
 
         RETRY gives the recipient a fresh attempt budget; the operator must have made
-        sure that the old worker is stopped. Raises ExecutionBusyError while a live
-        owner holds the execution, ValueError for a missing reason or a recipient that
-        is not UNKNOWN.
+        sure that the old worker is stopped. ``attempt_id`` is the attempt the operator
+        looked at; if it is not the recipient's latest attempt, the decision is refused.
+        Raises ExecutionBusyError while a live owner holds the execution, ValueError for
+        a missing reason, a stale attempt or a recipient that is not UNKNOWN.
         """
         if not reason.strip():
             msg = "A reason is required to resolve an unknown delivery"
@@ -749,18 +751,38 @@ class ExecutionStoreMixin:
                     msg = f"Execution {execution_id} is still owned by {row['owner']}"
                     raise ExecutionBusyError(msg)
                 self._settle(execution_id, now, "lease_expired")
-            self._apply_resolution(row, envelope_address(recipient), resolution, now)
+            key = envelope_address(recipient)
+            if attempt_id is not None:
+                self._check_latest_attempt(execution_id, key, attempt_id)
+            self._apply_resolution(row, key, resolution, now)
             self._record_event(
                 now,
                 _Event(
                     "unknown_resolved",
                     execution_id=execution_id,
+                    attempt_id=attempt_id,
                     actor=actor,
                     reason=reason,
                     details={"recipient": recipient, "resolution": resolution.value},
                 ),
             )
             return self._settle(execution_id, now, "resolved")
+
+    def _check_latest_attempt(self, execution_id: int, recipient: str, attempt_id: int) -> None:
+        latest = None
+        for row in self.conn.execute(
+            "SELECT attempt_id, recipients_json FROM delivery_attempts "
+            "WHERE execution_id = ? ORDER BY attempt_no",
+            (execution_id,),
+        ):
+            if recipient in json.loads(row["recipients_json"]):
+                latest = row["attempt_id"]
+        if latest != attempt_id:
+            msg = (
+                f"Attempt {attempt_id} is not the latest attempt for {recipient} "
+                f"(latest: {latest}); reload the page"
+            )
+            raise ValueError(msg)
 
     def _apply_resolution(
         self, execution: sqlite3.Row, recipient: str, resolution: Resolution, now: datetime

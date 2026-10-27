@@ -32,6 +32,7 @@ from mail_cadence.execution_store import (
     ClaimStatus,
     ExecutionOutcome,
     StaleClaimError,
+    envelope_address,
 )
 from mail_cadence.mailer import (
     INSECURE_SMTP_AUTH_MESSAGE,
@@ -49,6 +50,7 @@ from mail_cadence.models import (
     TaskExecutionStatus,
     WorkSchedules,
 )
+from mail_cadence.report_store import ReportClaim
 from mail_cadence.reporter import ReportGenerator, aggregate_summary_report
 from mail_cadence.repository import DatabaseRepository
 from mail_cadence.scheduler import TaskScheduler, TokenBucketRateLimiter, WindowInstance
@@ -206,13 +208,16 @@ async def _dispatch(
     logger.info(f"Claimed {len(plan.scheduled)} tasks ({len(plan.skipped)} skipped).")
 
     async with mailer, _heartbeat(repo, run.owner):
+        # Reports of earlier runs that are still unconfirmed go first (D14).
+        report_states = await _send_reports(run, repo.claim_reports(run.owner))
         results = await _execute_claimed(run, plan.scheduled)
         report = aggregate_summary_report(plan.skipped + results, start_time, datetime.now(UTC))
-        report_ok = await _send_report_if_needed(
-            report, loaded.mail_config, repo.has_report_settings(), mailer
-        )
+        report_states += await _send_new_report(run, report, loaded.mail_config)
 
     statuses = [r.status for r in results] + plan.carried
+    if "UNKNOWN" in report_states:
+        statuses.append(TaskExecutionStatus.UNKNOWN)
+    report_ok = all(state == "ACCEPTED" for state in report_states)
     code = _exit_code(statuses, report_ok=report_ok)
     with contextlib.suppress(sqlite3.Error):
         repo.finish_run(run.run_id, code, _summary(statuses), "ok" if report_ok else "failed")
@@ -610,18 +615,57 @@ def _load_config(repo: DatabaseRepository) -> _LoadedConfig | None:
         return None
 
 
+def _report_due(report: BatchSummaryReport, has_report_settings: bool) -> bool:
+    executed = report.successful_tasks + report.partial_tasks + report.failed_tasks
+    if executed == 0:
+        logger.info("No tasks were executed in this batch; status report not sent.")
+        return False
+    if not has_report_settings:
+        logger.warning("Report settings are not configured; status report not sent.")
+        return False
+    return True
+
+
 async def _send_report_if_needed(
     report: BatchSummaryReport,
     mail_config: MailConfiguration,
     has_report_settings: bool,
     mailer: AsyncMailer,
 ) -> bool:
-    """Send the status report when one is due; False only if sending it failed."""
-    executed = report.successful_tasks + report.partial_tasks + report.failed_tasks
-    if executed == 0:
-        logger.info("No tasks were executed in this batch; status report not sent.")
-        return True
-    if not has_report_settings:
-        logger.warning("Report settings are not configured; status report not sent.")
+    """Dry runs: log the report that would be sent; False only if that failed."""
+    if not _report_due(report, has_report_settings):
         return True
     return await ReportGenerator().send_report(report, mail_config.report_settings, mailer)
+
+
+async def _send_new_report(
+    run: _Run, report: BatchSummaryReport, mail_config: MailConfiguration
+) -> list[str]:
+    """Render this run's report once, store it and send it; returns the final states."""
+    if not _report_due(report, run.repo.has_report_settings()):
+        return []
+    settings = mail_config.report_settings
+    rendered = ReportGenerator().render_report_message(
+        report, settings, run.mailer.settings.smtp_user
+    )
+    report_id = run.repo.create_report(
+        run.run_id, envelope_address(settings.recipient), rendered.message_id, rendered.data
+    )
+    return await _send_reports(run, run.repo.claim_reports(run.owner, [report_id]))
+
+
+async def _send_reports(run: _Run, claims: list[ReportClaim]) -> list[str]:
+    """One attempt per claimed report; a failure never touches task messages."""
+    states: list[str] = []
+    for claim in claims:
+        try:
+            run.repo.start_report_attempt(claim)
+            results = await run.mailer.deliver(claim.data, [claim.recipient])
+            state = run.repo.record_report_result(claim, results[claim.recipient])
+        except (StaleClaimError, sqlite3.Error) as exc:
+            logger.error(f"Report {claim.report_id} lost its delivery state: {exc}")
+            state = "UNKNOWN"
+        log = logger.info if state == "ACCEPTED" else logger.error
+        log(f"Status report {claim.report_id} to {claim.recipient}: {state}")
+        states.append(state)
+    return states

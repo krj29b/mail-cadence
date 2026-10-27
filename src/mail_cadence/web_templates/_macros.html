@@ -1,0 +1,12 @@
+{# Badge for execution, recipient and report states (ADR 0001). #}
+{% macro state_badge(state) -%}
+  {%- if state in ('SUCCEEDED', 'ACCEPTED', 'SUCCESS') -%}
+    <span class="badge-success">{{ state }}</span>
+  {%- elif state in ('FAILED', 'PERMANENT_FAILURE', 'RETRY_EXHAUSTED', 'EXPIRED', 'WINDOW_EXPIRED') -%}
+    <span class="badge-failed">{{ state }}</span>
+  {%- elif state in ('PARTIAL', 'RETRY_WAIT', 'NEEDS_REVIEW', 'UNKNOWN', 'IN_FLIGHT') -%}
+    <span class="badge-partial">{{ state }}</span>
+  {%- else -%}
+    <span class="badge-skipped">{{ state }}</span>
+  {%- endif -%}
+{%- endmacro %}

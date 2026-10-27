@@ -24,8 +24,8 @@
             <span class="badge-success"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>SUCCESS</span>
           {% elif log.status == 'FAILED' %}
             <span class="badge-failed"><span class="w-1.5 h-1.5 rounded-full bg-rose-400"></span>FAILED</span>
-          {% elif log.status == 'PARTIAL' %}
-            <span class="badge-partial"><span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>PARTIAL</span>
+          {% elif log.status in ('PARTIAL', 'UNKNOWN') %}
+            <span class="badge-partial"{% if log.status == 'UNKNOWN' %} title="The server may have accepted the message; review it under Executions"{% endif %}><span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>{{ log.status }}</span>
           {% else %}
             <span class="badge-skipped"><span class="w-1.5 h-1.5 rounded-full bg-slate-400"></span>{{ log.status }}</span>
           {% endif %}

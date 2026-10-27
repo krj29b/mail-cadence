@@ -80,7 +80,7 @@ sudo systemctl enable --now mail-cadence-web.service
 systemctl list-timers mail-cadence-dispatch.timer
 ```
 
-Exit codes of a run: `0` success, `1` configuration or database error, `2` one or more tasks failed or were delivered only partially, `3` the outcome of a delivery is unknown and needs review (never resent automatically), `4` the tasks succeeded but the status report was not sent. Every non-zero code marks the unit as failed, so they show up in `systemctl --failed`; add an `OnFailure=` unit if you want a notification.
+Exit codes of a run: `0` success, `1` configuration or database error, `2` one or more tasks failed or were delivered only partially, `3` the outcome of a delivery is unknown and needs review (never resent automatically), `4` the tasks succeeded but the status report was not confirmed (later runs retry it, at most three attempts in total). Every non-zero code marks the unit as failed, so they show up in `systemctl --failed`; add an `OnFailure=` unit if you want a notification.
 
 ## Web panel behind nginx
 

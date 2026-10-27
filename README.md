@@ -116,7 +116,7 @@ mail-cadence [OPTIONS]
 - **`0`**: Successful execution or no tasks were eligible for processing.
 - **`1`**: Configuration or database error encountered (e.g. invalid file format, database connection failure).
 - **`2`**: One or more tasks failed or were delivered only partially (some recipients did not receive the message).
-- **`3`**: The outcome of a delivery is unknown: the connection was lost after the message was sent, so the server may have accepted it. Such a delivery is never resent automatically; review it (see below).
+- **`3`**: The outcome of a delivery is unknown: the connection was lost after the message was sent, so the server may have accepted it. Such a delivery is never resent automatically; review it (see "Reviewing unknown deliveries" below).
 - **`4`**: All executed tasks succeeded, but the status report email could not be sent.
 
 Precedence when several apply: `3`, `1`, `2`, `4`. Until a window occurrence ends, every run in it reports the outcome of the task's execution in that occurrence again (`2` for an incomplete one, `3` for an unknown one), although nothing is sent again, so a monitoring alert stays on until the window is over or the execution is resolved.
@@ -124,6 +124,20 @@ Precedence when several apply: `3`, `1`, `2`, `4`. Until a window occurrence end
 #### Delivery guarantees
 
 Before anything is sent, a run claims each task for its window occurrence in the database, so two runs (two timers, the CLI and the web panel, several hosts sharing the database) never send the same task at the same time. The message is rendered once and stored; every retry sends the same bytes. Each recipient's outcome is stored per attempt: a recipient accepted by the server or refused with a 5xx code is never sent the message again, a 4xx code is retried within `max_retries` (counted across runs), and no attempt starts after the window ends. A message is never sent twice automatically when its outcome is unknown. Details: [ADR 0001](docs/adr/0001-execution-state-model.md). These guarantees do not extend to the SMTP account as a whole: rate limits apply per window and per process.
+
+#### Status report
+
+When a run executed at least one task and report settings are configured, its report is rendered once and stored. A report that was not accepted is retried by the following runs from the same stored message, one attempt per run and at most three in total; a refusal with a 5xx code or an unknown outcome ends it. A failed report never resends task messages. Exit code `4` means that a report handled in this run (its own or an earlier one retried) is not confirmed.
+
+#### Reviewing unknown deliveries
+
+The web panel's **Executions** page lists every execution with its task version, window occurrence and recipient progress; "Needs review" filters the ones with an unknown outcome, and the dashboard shows how many there are. The page of an execution shows each recipient, every attempt and the event history. For a recipient in state `UNKNOWN`, check the SMTP server's log for the Message-ID shown on the page, then record a decision with a reason:
+
+- **Delivered**: the server's log shows the message was accepted;
+- **Not delivered**: the log shows it was not;
+- **Send again**: the next dispatch run sends the stored message again, if the same window occurrence is still open (once it has ended, no run picks the execution up again); first make sure the worker that made the attempt is no longer running, because nothing can stop an SMTP connection it still holds. For a manual send, use the **Run** button again instead.
+
+A decision refers to the attempt shown on the page and is refused if a newer attempt exists. It is recorded with the panel user's name. The **Run** button on the Tasks page sends a task once per page load: clicking again reports the same send; reload the page to send it again.
 
 #### Example Dispatch Commands
 ```bash
