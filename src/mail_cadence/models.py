@@ -1,5 +1,6 @@
 import os
 import re
+from dataclasses import dataclass
 from datetime import datetime, time
 from email.utils import getaddresses
 from enum import StrEnum
@@ -44,6 +45,22 @@ PRIORITY_ORDER: dict[str, int] = {
 
 MAX_RETRIES_LIMIT = 10
 END_OF_DAY = "24:00"
+
+
+class Outcome(StrEnum):
+    """What one SMTP attempt proved for one recipient (ADR 0001, D1/D2)."""
+
+    ACCEPTED = "ACCEPTED"  # 250 after the end of DATA
+    PERMANENT = "PERMANENT"  # certain 5xx refusal
+    TRANSIENT = "TRANSIENT"  # certain non-delivery: 4xx or failure before DATA
+    UNKNOWN = "UNKNOWN"  # the connection failed after DATA: the message may be accepted
+
+
+@dataclass(frozen=True, slots=True)
+class RecipientResult:
+    outcome: Outcome
+    code: int | None = None
+    message: str | None = None
 
 
 class TaskExecutionStatus(StrEnum):

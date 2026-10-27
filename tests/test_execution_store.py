@@ -21,8 +21,6 @@ from mail_cadence.execution_store import (
     ClaimRequest,
     ClaimStatus,
     ExecutionBusyError,
-    Outcome,
-    RecipientResult,
     Resolution,
     StaleClaimError,
     derive_execution_state,
@@ -32,6 +30,8 @@ from mail_cadence.models import (
     BodyTemplate,
     HourWindow,
     MailTask,
+    Outcome,
+    RecipientResult,
     Recipients,
     Schedule,
     WorkSchedules,
@@ -565,3 +565,23 @@ def test_concurrent_processes_claim_each_task_once(db_path: Path, tmp_path: Path
         assert len(winners) == 1, (task_id, statuses)
         assert owners[task_id] == f"worker-{winners[0]}"
         assert all(s[task_id] in ("CLAIMED", "BUSY") for s in statuses)
+
+
+# --- Message snapshot (T16) ------------------------------------------------------------
+
+
+def test_message_is_pinned_once_and_survives_a_new_owner(
+    repo: DatabaseRepository, clock: FakeClock
+) -> None:
+    old = _claim(repo, "owner-1")
+    assert repo.pin_message(old, "<1@example.com>", b"first") == b"first"
+    assert repo.pin_message(old, "<2@example.com>", b"changed template") == b"first"
+
+    clock.advance(seconds=DEFAULT_LEASE.total_seconds() + 1)
+    with pytest.raises(StaleClaimError):
+        repo.pin_message(old, "<3@example.com>", b"late")
+    new = _claim(repo, "owner-2")
+    assert repo.pin_message(new, "<4@example.com>", b"re-rendered") == b"first"
+
+    row = repo.conn.execute("SELECT message_id, message_bytes FROM task_executions").fetchone()
+    assert (row[0], bytes(row[1])) == ("<1@example.com>", b"first")

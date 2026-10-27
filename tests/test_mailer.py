@@ -584,6 +584,9 @@ async def test_async_mailer_context_manager_reuse(
             self.quit_calls += 1
             self.is_connected = False
 
+        def close(self) -> None:
+            self.is_connected = False
+
     fake_client = FakeSMTP()
 
     async def mock_connect() -> None:
@@ -656,6 +659,9 @@ async def test_async_mailer_context_manager_reconnect_on_disconnect(
 
         async def quit(self) -> None:
             self.quit_calls += 1
+            self.is_connected = False
+
+        def close(self) -> None:
             self.is_connected = False
 
     monkeypatch.setattr("aiosmtplib.SMTP", FakeSMTP)

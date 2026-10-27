@@ -18,6 +18,7 @@ from email.utils import parseaddr
 from enum import StrEnum
 
 from mail_cadence.database import to_utc_iso
+from mail_cadence.models import Outcome, RecipientResult
 
 Clock = Callable[[], datetime]
 
@@ -35,13 +36,6 @@ class ClaimStatus(StrEnum):
     BUSY = "BUSY"  # another live owner holds an execution of this task
     DONE = "DONE"  # the execution for this key has already finished
     NO_TASK = "NO_TASK"  # no live task with this id
-
-
-class Outcome(StrEnum):
-    ACCEPTED = "ACCEPTED"  # 250 after the end of DATA
-    PERMANENT = "PERMANENT"  # certain 5xx
-    TRANSIENT = "TRANSIENT"  # certain 4xx or failure before DATA
-    UNKNOWN = "UNKNOWN"  # the message may have been accepted
 
 
 class Resolution(StrEnum):
@@ -100,13 +94,6 @@ class _Event:
     reason: str | None = None
     actor: str | None = None
     details: Mapping[str, object] | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class RecipientResult:
-    outcome: Outcome
-    code: int | None = None
-    message: str | None = None
 
 
 def envelope_address(address: str) -> str:
@@ -573,6 +560,27 @@ class ExecutionStoreMixin:
             updates,
         )
         return any(u[0] == "UNKNOWN" for u in updates)
+
+    def pin_message(self, claim: Claim, message_id: str, data: bytes) -> bytes:
+        """Store the rendered message once; every attempt sends the stored bytes (D7).
+
+        Returns the stored message: the given one on the first call, the earlier one
+        afterwards, so a template change between attempts has no effect.
+        """
+        with self._write_transaction() as now:
+            row = self._owned_row(claim, now, allow_expired=False)
+            if row["message_bytes"] is not None:
+                return bytes(row["message_bytes"])
+            self.conn.execute(
+                "UPDATE task_executions SET message_id = ?, message_bytes = ? "
+                "WHERE execution_id = ?",
+                (message_id, data, claim.execution_id),
+            )
+            self._record_event(
+                now,
+                _Event("message_pinned", claim.execution_id, details={"message_id": message_id}),
+            )
+            return data
 
     def next_attempt_at(self, execution_id: int) -> datetime | None:
         """When the earliest waiting recipient becomes due, or None if none waits."""

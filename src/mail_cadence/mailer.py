@@ -1,11 +1,14 @@
 import asyncio
 import contextlib
+import email.policy
 import html
 import logging
 import re
 import time
 from collections.abc import AsyncIterator, Sequence
+from dataclasses import dataclass, field
 from email.message import EmailMessage, Message
+from email.parser import BytesHeaderParser
 from email.utils import formatdate, make_msgid, parseaddr
 from pathlib import Path
 from types import TracebackType
@@ -24,7 +27,14 @@ from jinja2 import (
     select_autoescape,
 )
 
-from mail_cadence.models import MailTask, Settings, TaskExecutionResult, TaskExecutionStatus
+from mail_cadence.models import (
+    MailTask,
+    Outcome,
+    RecipientResult,
+    Settings,
+    TaskExecutionResult,
+    TaskExecutionStatus,
+)
 from mail_cadence.scheduler import TokenBucketRateLimiter
 
 logger = logging.getLogger(__name__)
@@ -48,6 +58,10 @@ RENDER_ERRORS: tuple[type[Exception], ...] = (TemplateError, ValueError, TypeErr
 # Errors a broken connection raises on close; quitting is best effort.
 SMTP_CLOSE_ERRORS: tuple[type[Exception], ...] = (aiosmtplib.SMTPException, OSError)
 
+# Stored task messages are 7-bit clean (8-bit parts become base64), CRLF line endings,
+# so the same bytes go through any server, with or without 8BITMIME.
+SNAPSHOT_POLICY = email.policy.SMTP.clone(cte_type="7bit")
+
 
 class SMTPClient(Protocol):
     """The part of ``aiosmtplib.SMTP`` that AsyncMailer uses; tests pass fakes that match it."""
@@ -62,6 +76,17 @@ class SMTPClient(Protocol):
     ) -> tuple[dict[str, SMTPResponse], str]: ...
 
     async def quit(self) -> object: ...
+
+    def close(self) -> None: ...
+
+    # One SMTP transaction step by step, so the protocol phase of a failure is known.
+    async def mail(self, sender: str, /) -> SMTPResponse: ...
+
+    async def rcpt(self, recipient: str, /) -> SMTPResponse: ...
+
+    async def data(self, message: bytes, /) -> SMTPResponse: ...
+
+    async def rset(self) -> SMTPResponse: ...
 
 
 def list_builtin_templates() -> list[str]:
@@ -216,6 +241,54 @@ class InsecureSMTPAuthError(ValueError):
     """SMTP login without TLS/STARTTLS was configured but not explicitly allowed."""
 
 
+# --- Durable delivery: message snapshot and one phase-aware attempt (ADR 0001, D2) ------
+
+
+@dataclass(frozen=True, slots=True)
+class RenderedMessage:
+    """A task message rendered once and stored before the first attempt."""
+
+    message_id: str
+    data: bytes
+
+
+def envelope_sender(data: bytes, fallback: str = "") -> str:
+    """The MAIL FROM address: the bare address of the stored message's From header."""
+    header = BytesHeaderParser(policy=email.policy.default).parsebytes(data).get("From", "")
+    return parseaddr(str(header))[1] or fallback
+
+
+def _refusal(code: int) -> Outcome:
+    is_permanent = SMTP_PERMANENT_ERROR_MIN <= code < SMTP_PERMANENT_ERROR_MAX
+    return Outcome.PERMANENT if is_permanent else Outcome.TRANSIENT
+
+
+@dataclass(slots=True)
+class _Attempt:
+    """Per-recipient results of one attempt and how far the SMTP transaction got."""
+
+    recipients: tuple[str, ...]
+    phase: str = "connect"
+    accepted: list[str] = field(default_factory=list)
+    results: dict[str, RecipientResult] = field(default_factory=dict)
+
+    def finish_remaining(self, outcome: Outcome, code: int | None, message: str) -> None:
+        for recipient in self.recipients:
+            self.results.setdefault(recipient, RecipientResult(outcome, code, message))
+
+    def fail(self, exc: Exception) -> None:
+        """Record a failure that ended the transaction for every recipient left.
+
+        A reply code is certain, except at connect/login, which says nothing about the
+        recipients. Without a reply, the outcome is unknown only once DATA has started.
+        """
+        if isinstance(exc, aiosmtplib.SMTPResponseException) and self.phase != "connect":
+            self.finish_remaining(_refusal(exc.code), exc.code, exc.message)
+            return
+        outcome = Outcome.UNKNOWN if self.phase == "data" else Outcome.TRANSIENT
+        self.finish_remaining(outcome, None, f"{type(exc).__name__}: {exc}")
+
+
 class AsyncMailer:
     def __init__(
         self,
@@ -255,16 +328,22 @@ class AsyncMailer:
             while not self._pool.empty():
                 try:
                     client = self._pool.get_nowait()
-                    await self._quit_if_connected(client)
+                    await self._close_client(client)
                 except asyncio.QueueEmpty:
                     break
             self._pool = None
 
     @staticmethod
-    async def _quit_if_connected(client: SMTPClient) -> None:
+    async def _close_client(client: SMTPClient) -> None:
+        """QUIT if still connected, then always close the transport.
+
+        After the server drops the connection, older aiosmtplib versions leave the
+        transport open; closing it here frees the socket in every case.
+        """
         if client.is_connected:
             with contextlib.suppress(*SMTP_CLOSE_ERRORS):
                 await client.quit()
+        client.close()
 
     @staticmethod
     def _extract_smtp_code(error_val: Any) -> int | None:
@@ -326,7 +405,7 @@ class AsyncMailer:
         if keep_client and self._pool is not None and client.is_connected:
             self._pool.put_nowait(client)
         else:
-            await self._quit_if_connected(client)
+            await self._close_client(client)
 
     @contextlib.asynccontextmanager
     async def _acquire_smtp_client(self) -> AsyncIterator[SMTPClient]:
@@ -342,7 +421,8 @@ class AsyncMailer:
             try:
                 await self._ensure_connected(client)
                 yield client
-            except aiosmtplib.SMTPServerDisconnected:
+            except BaseException:
+                # Any failure may leave the session mid-transaction: never reuse it.
                 keep_client = False
                 raise
             finally:
@@ -354,7 +434,7 @@ class AsyncMailer:
             await self._ensure_connected(client)
             yield client
         finally:
-            await self._quit_if_connected(client)
+            await self._close_client(client)
 
     @staticmethod
     def _smtp_exception_result(
@@ -554,3 +634,52 @@ class AsyncMailer:
             attempt_count=attempts,
             error_details=last_error,
         )
+
+    def render_task_message(self, task: MailTask) -> RenderedMessage:
+        """Render and serialise a task message; raises one of RENDER_ERRORS on failure."""
+        body = self.renderer.render_task_body(task)
+        msg = build_email_message(task, body, default_sender=self.settings.smtp_user)
+        return RenderedMessage(str(msg["Message-ID"]), msg.as_bytes(policy=SNAPSHOT_POLICY))
+
+    async def deliver(self, data: bytes, recipients: Sequence[str]) -> dict[str, RecipientResult]:
+        """Send stored message bytes to ``recipients`` in one SMTP transaction.
+
+        Never retries and never raises for SMTP or network errors: every recipient gets
+        an outcome. A failure after DATA has started without a final reply is UNKNOWN.
+        """
+        attempt = _Attempt(tuple(recipients))
+        if self.dry_run:
+            logger.info(f"[DRY-RUN] Would deliver a stored message to {list(recipients)}")
+            attempt.finish_remaining(Outcome.ACCEPTED, None, "dry run")
+            return attempt.results
+        sender = envelope_sender(data, fallback=self.settings.smtp_user or "")
+        try:
+            async with self._acquire_smtp_client() as client:
+                await self._transact(client, sender, data, attempt)
+        except (aiosmtplib.SMTPException, OSError) as exc:
+            attempt.fail(exc)
+        return attempt.results
+
+    @staticmethod
+    async def _transact(client: SMTPClient, sender: str, data: bytes, attempt: _Attempt) -> None:
+        attempt.phase = "mail"
+        await client.mail(sender)
+        attempt.phase = "rcpt"
+        for recipient in attempt.recipients:
+            try:
+                await client.rcpt(recipient)
+            except aiosmtplib.SMTPRecipientRefused as exc:
+                attempt.results[recipient] = RecipientResult(
+                    _refusal(exc.code), exc.code, exc.message
+                )
+            else:
+                attempt.accepted.append(recipient)
+        if not attempt.accepted:
+            await client.rset()
+            return
+        attempt.phase = "data"
+        response = await client.data(data)
+        for recipient in attempt.accepted:
+            attempt.results[recipient] = RecipientResult(
+                Outcome.ACCEPTED, response.code, response.message
+            )
