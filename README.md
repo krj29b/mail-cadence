@@ -1,3 +1,10 @@
+[![CI](https://github.com/krj29b/mail-cadence/actions/workflows/ci.yml/badge.svg)](https://github.com/krj29b/mail-cadence/actions/workflows/ci.yml)
+[![PyPI version](https://img.shields.io/pypi/v/mail-cadence.svg)](https://pypi.org/project/mail-cadence/)
+[![Python versions](https://img.shields.io/pypi/pyversions/mail-cadence.svg)](https://pypi.org/project/mail-cadence/)
+[![License](https://img.shields.io/pypi/l/mail-cadence.svg)](https://github.com/TWOJ_LOGIN/mail-cadence/blob/main/LICENSE)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![Typed](https://img.shields.io/pypi/types/mail-cadence.svg)](https://pypi.org/project/mail-cadence/)
+
 # MailCadence Engine
 
 Production-grade, asynchronous bulk email dispatch and reporting engine built in **Python 3.12+**.
