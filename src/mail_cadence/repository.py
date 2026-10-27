@@ -5,7 +5,7 @@ from collections import defaultdict
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from mail_cadence.database import to_utc_iso
+from mail_cadence.database import sync_definitions, to_utc_iso
 from mail_cadence.models import (
     BodyTemplate,
     ContextVar,
@@ -74,6 +74,7 @@ class DatabaseRepository:
     ) -> None:
         with self.conn:
             self._save_work_schedules(work_schedules, mode=mode)
+            sync_definitions(self.conn)
 
     def _save_work_schedules(
         self, work_schedules: WorkSchedules, mode: Literal["upsert", "replace"] = "upsert"
@@ -268,6 +269,7 @@ class DatabaseRepository:
     ) -> None:
         with self.conn:
             self._save_mail_configuration(mail_config, mode=mode)
+            sync_definitions(self.conn)
 
     def _save_mail_configuration(
         self,
@@ -295,6 +297,8 @@ class DatabaseRepository:
                 self._delete_all_tasks()
             self._save_work_schedules(work_schedules, mode=mode)
             self._save_mail_configuration(mail_config, mode=mode)
+            # Identities follow task names, so a replace import keeps them (ADR 0001, D3).
+            sync_definitions(self.conn)
 
     def _delete_all_tasks(self) -> None:
         self.conn.execute("DELETE FROM task_context_variables")
@@ -499,20 +503,51 @@ class DatabaseRepository:
         ``reset_window_state=None`` (default) resets ``last_run``/``last_status`` only when
         the task definition changed, so saving an unchanged task never re-enables a
         dispatch in the current window. Pass ``True``/``False`` to force either behaviour.
+        A reset of an existing task also starts a new dispatch generation (ADR 0001, D6).
         """
         if reset_window_state is None:
             existing = self.get_mail_task(task.id)
             reset_window_state = existing is None or existing.model_dump() != task.model_dump()
         with self.conn:
+            existed = self._task_exists(task.id)
             self._save_task(task, mode="upsert")
+            sync_definitions(self.conn)
             if reset_window_state:
                 self._reset_task_window_state(task.id)
+                if existed:
+                    self._start_dispatch_generation(task.id, reason="task_saved")
         return reset_window_state
 
     def reset_task_window_state(self, task_id: str) -> bool:
         """Allow a task to be dispatched again in its current window."""
         with self.conn:
-            return self._reset_task_window_state(task_id)
+            if not self._reset_task_window_state(task_id):
+                return False
+            self._start_dispatch_generation(task_id, reason="explicit_reset")
+            return True
+
+    def _task_exists(self, task_id: str) -> bool:
+        row = self.conn.execute("SELECT 1 FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        return row is not None
+
+    def _start_dispatch_generation(self, task_id: str, reason: str) -> None:
+        """Bump the live identity's generation and record why (no transaction of its own)."""
+        self.conn.execute(
+            """
+            UPDATE task_identities SET dispatch_generation = dispatch_generation + 1
+            WHERE task_id = ? AND deleted_at IS NULL
+            """,
+            (task_id,),
+        )
+        self.conn.execute(
+            """
+            INSERT INTO execution_events (occurred_at, kind, task_uid, reason, details_json)
+            SELECT ?, 'generation_started', uid, ?, json_object('generation', dispatch_generation)
+            FROM task_identities
+            WHERE task_id = ? AND deleted_at IS NULL
+            """,
+            (to_utc_iso(datetime.now(UTC)), reason, task_id),
+        )
 
     def _reset_task_window_state(self, task_id: str) -> bool:
         cursor = self.conn.execute(
@@ -530,11 +565,13 @@ class DatabaseRepository:
     def delete_mail_task(self, task_id: str) -> bool:
         with self.conn:
             cursor = self.conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+            sync_definitions(self.conn)
             return cursor.rowcount > 0
 
     def save_single_schedule(self, schedule: Schedule) -> None:
         with self.conn:
             self._save_schedule(schedule)
+            sync_definitions(self.conn)
 
     def schedule_exists(self, schedule_id: str) -> bool:
         row = self.conn.execute("SELECT 1 FROM schedules WHERE id = ?", (schedule_id,)).fetchone()
@@ -543,6 +580,7 @@ class DatabaseRepository:
     def delete_schedule(self, schedule_id: str) -> bool:
         with self.conn:
             cursor = self.conn.execute("DELETE FROM schedules WHERE id = ?", (schedule_id,))
+            sync_definitions(self.conn)
             return cursor.rowcount > 0
 
     def get_recent_execution_logs(
