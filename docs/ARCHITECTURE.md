@@ -192,8 +192,8 @@ erDiagram
 ### Schema Versioning & Timestamps
 
 - `PRAGMA user_version` stores how many migrations from `database.MIGRATIONS` have been applied. `init_db` runs the missing ones in order and is a no-op on an up-to-date database. A database with a higher version than the code knows is refused (`sqlite3.DatabaseError`; `run` exits with code `1`).
-- Migrations: `1` creates the schema and adds columns missing from databases created before versioning; `2` normalizes task rows to the current validation (unknown priorities become `normal`, `max_retries` is clamped to `0..10`); `3` converts old `executed_at` values from SQLite `CURRENT_TIMESTAMP` format to ISO 8601; `4` replaces line breaks in the stored report subject prefix with spaces; `5` adds the execution-state tables of [ADR 0001](adr/0001-execution-state-model.md) and gives every existing task an identity and version 1.
-- Execution state (ADR 0001): `task_identities` (stable `uid` per task, retired on delete), `task_versions` and `schedule_versions` are kept in step with the configuration tables by `database.sync_definitions`, which every repository method that writes tasks or schedules calls inside its transaction. `dispatch_runs`, `task_executions`, `execution_recipients`, `delivery_attempts`, `report_deliveries` and `execution_events` are created but not yet used for dispatch; until the new path is enabled, `tasks.last_run`/`last_status` still decide eligibility.
+- Migrations: `1` creates the schema and adds columns missing from databases created before versioning; `2` normalizes task rows to the current validation (unknown priorities become `normal`, `max_retries` is clamped to `0..10`); `3` converts old `executed_at` values from SQLite `CURRENT_TIMESTAMP` format to ISO 8601; `4` replaces line breaks in the stored report subject prefix with spaces; `5` adds the execution-state tables of [ADR 0001](adr/0001-execution-state-model.md) and gives every existing task an identity and version 1; `6` converts the old path's `last_run`/`last_status` into executions (a legacy `SUCCESS` blocks its window occurrence, `PARTIAL`/`FAILED` block it as `NEEDS_REVIEW`).
+- Execution state (ADR 0001): `task_identities` (stable `uid` per task, retired on delete), `task_versions` and `schedule_versions` are kept in step with the configuration tables by `database.sync_definitions`, which every repository method that writes tasks or schedules calls inside its transaction. `dispatch_runs`, `task_executions`, `execution_recipients`, `delivery_attempts`, `report_deliveries` and `execution_events` drive every real dispatch (see Window-Level Idempotency Protection).
 - Every migration is idempotent, because databases created before versioning start at version `0` and run all of them.
 - The web panel migrates once in `create_app`; CLI commands and dispatch runs call `init_db` when they open the database.
 - All timestamps (`execution_logs.executed_at`, `tasks.last_run`) are stored as ISO 8601 in UTC with an explicit offset (`database.to_utc_iso`, e.g. `2026-10-17T06:15:00+00:00`). The panel shows them as `YYYY-MM-DD HH:MM:SS UTC`.
@@ -322,15 +322,16 @@ For hour windows where `start_time > end_time` (e.g., `22:00` to `04:00`):
 
 ### Window-Level Idempotency Protection
 
-To prevent duplicate dispatches during an active schedule window:
+Duplicate dispatches are prevented by durable execution state ([ADR 0001](adr/0001-execution-state-model.md)), not by `last_run`:
 
-- The engine evaluates `task.last_run` and `task.last_status`.
-- If `task.last_status == TaskStatus.SUCCESS` and `window_start_dt <= task.last_run < window_end_dt`:
-  - `is_task_eligible()` returns `False`.
-  - The task is skipped with status `SKIPPED_SCHEDULE`.
-- If `last_run` falls outside the active window instance or `last_status != SUCCESS` (e.g. `FAILED` or `PARTIAL`), the task is marked eligible for re-execution.
-- Dry-run executions are written to `execution_logs` only (flagged with `dry_run = 1` and excluded from dashboard statistics); they never update `last_run` / `last_status`, so they cannot block a real dispatch.
-- Saving a task (web panel or `save_single_task`) resets `last_run` / `last_status` only when the task definition changed. The panel's "Allow Resend" action (`POST /tasks/{id}/reset-window`) explicitly re-enables a dispatch in the current window.
+- `TaskScheduler.window_instance` returns the window occurrence active at the reference time as UTC instants; its key is `"{schedule_id}@{start UTC}"`.
+- A real run claims every task for `(task identity, dispatch generation, window key)` (`DatabaseRepository.claim_execution`, `BEGIN IMMEDIATE`). A finished execution for that key skips the task (`SKIPPED_SCHEDULE`, "already executed in this window"); an execution owned by another live worker skips it as `SKIPPED_BUSY`. At most one execution per task is owned at a time.
+- The message is rendered from the pinned task version and stored before the first attempt. Attempts select only recipients that are due; results are stored per recipient. Accepted and 5xx recipients are never attempted again, 4xx ones are retried within the budget, no attempt starts after the window end, and an unknown outcome is never retried automatically.
+- A worker renews its lease every minute; an execution whose lease expired is recovered at the start of the next run: in-flight recipients become `UNKNOWN` (execution `NEEDS_REVIEW`).
+- Dry runs read this state (`peek_claim`) and never write it; their logs carry `dry_run = 1`.
+- Saving a changed task starts a new dispatch generation (the window can be sent again with the new version) unless `reset_window_state=False`; "Allow Resend" (`POST /tasks/{id}/reset-window`) starts a new generation without a new version.
+- `tasks.last_run` / `last_status` remain a projection for the UI and the XML export; only an execution of the task's current version updates them.
+- A manual send (`POST /tasks/{id}/run`) ignores the window and uses the key `manual:{idempotency_key}`: the same key reports the earlier send instead of sending again.
 - The status report is sent only when at least one task was executed (success, partial or failed) and `report_settings` is configured.
 
 ---

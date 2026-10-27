@@ -115,8 +115,15 @@ mail-cadence [OPTIONS]
 #### Exit Codes
 - **`0`**: Successful execution or no tasks were eligible for processing.
 - **`1`**: Configuration or database error encountered (e.g. invalid file format, database connection failure).
-- **`2`**: One or more tasks failed or were delivered only partially (some recipients did not receive the message). Takes precedence over `4`.
+- **`2`**: One or more tasks failed or were delivered only partially (some recipients did not receive the message).
+- **`3`**: The outcome of a delivery is unknown: the connection was lost after the message was sent, so the server may have accepted it. Such a delivery is never resent automatically; review it (see below).
 - **`4`**: All executed tasks succeeded, but the status report email could not be sent.
+
+Precedence when several apply: `3`, `1`, `2`, `4`. Until a window occurrence ends, every run in it reports the outcome of the task's execution in that occurrence again (`2` for an incomplete one, `3` for an unknown one), although nothing is sent again, so a monitoring alert stays on until the window is over or the execution is resolved.
+
+#### Delivery guarantees
+
+Before anything is sent, a run claims each task for its window occurrence in the database, so two runs (two timers, the CLI and the web panel, several hosts sharing the database) never send the same task at the same time. The message is rendered once and stored; every retry sends the same bytes. Each recipient's outcome is stored per attempt: a recipient accepted by the server or refused with a 5xx code is never sent the message again, a 4xx code is retried within `max_retries` (counted across runs), and no attempt starts after the window ends. A message is never sent twice automatically when its outcome is unknown. Details: [ADR 0001](docs/adr/0001-execution-state-model.md). These guarantees do not extend to the SMTP account as a whole: rate limits apply per window and per process.
 
 #### Example Dispatch Commands
 ```bash
@@ -300,7 +307,7 @@ async def main() -> None:
 
     # 2. Run the scheduler & SMTP dispatch pipeline (respects active HourWindows)
     #    (exit code: 0 = ok, 1 = configuration error, 2 = a task failed or was partial,
-#     4 = status report not sent)
+#     3 = outcome unknown, 4 = status report not sent)
     exit_code = await run_dispatch(DispatchOptions(db_path=DB_PATH), Settings.load())
     print(f"Dispatch finished with exit code: {exit_code}")
 

@@ -1,4 +1,5 @@
 import sqlite3
+from collections.abc import Sequence
 from contextlib import closing
 from datetime import datetime
 from pathlib import Path
@@ -9,8 +10,16 @@ import pytest
 
 from mail_cadence.cli import run_dispatch_pipeline
 from mail_cadence.database import get_connection
-from mail_cadence.models import TaskExecutionStatus
+from mail_cadence.mailer import AsyncMailer
+from mail_cadence.models import Outcome, RecipientResult, TaskExecutionStatus
 from mail_cadence.repository import DatabaseRepository
+
+
+async def _accept_all(
+    _mailer: AsyncMailer, _data: bytes, recipients: Sequence[str]
+) -> dict[str, RecipientResult]:
+    """Stands in for AsyncMailer.deliver: the server accepts every recipient."""
+    return {r: RecipientResult(Outcome.ACCEPTED, 250) for r in recipients}
 
 
 @pytest.mark.asyncio
@@ -57,8 +66,11 @@ async def test_run_dispatch_pipeline_idempotency_two_runs(tmp_path: Path) -> Non
         ).fetchone()
         return row["status"], row["error_details"]
 
-    fake_smtp = AsyncMock(return_value=(True, None, {}))
-    with patch("mail_cadence.mailer.AsyncMailer.send_single_message", fake_smtp):
+    fake_smtp = AsyncMock(return_value=(True, None, {}))  # the status report
+    with (
+        patch("mail_cadence.mailer.AsyncMailer.send_single_message", fake_smtp),
+        patch.object(AsyncMailer, "deliver", _accept_all),
+    ):
         # 1. Dry-run: TASK-001 (in its window) is simulated but its state stays untouched.
         assert await run(dry_run=True) == 0
         with closing(get_connection(db_file)) as conn:
@@ -79,7 +91,7 @@ async def test_run_dispatch_pipeline_idempotency_two_runs(tmp_path: Path) -> Non
             status, reason = last_log(conn)
             assert status == TaskExecutionStatus.SKIPPED_SCHEDULE.value
             assert reason is not None
-            assert "already dispatched" in reason
+            assert "already executed in this window" in reason
 
 
 @pytest.mark.asyncio

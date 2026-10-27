@@ -26,6 +26,11 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_REPORT_TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
 
+_FAILED_STATUSES = frozenset({TaskExecutionStatus.FAILED, TaskExecutionStatus.UNKNOWN})
+_SKIPPED_STATUSES = frozenset(
+    {TaskExecutionStatus.SKIPPED_SCHEDULE, TaskExecutionStatus.SKIPPED_BUSY}
+)
+
 
 def aggregate_summary_report(
     results: list[TaskExecutionResult],
@@ -35,8 +40,9 @@ def aggregate_summary_report(
     total_duration = (end_time - start_time).total_seconds() * 1000.0
     successful = sum(1 for r in results if r.status == TaskExecutionStatus.SUCCESS)
     partial = sum(1 for r in results if r.status == TaskExecutionStatus.PARTIAL)
-    failed = sum(1 for r in results if r.status == TaskExecutionStatus.FAILED)
-    skipped = sum(1 for r in results if r.status == TaskExecutionStatus.SKIPPED_SCHEDULE)
+    # An unknown outcome is reported with the failures: it needs someone to look at it.
+    failed = sum(1 for r in results if r.status in _FAILED_STATUSES)
+    skipped = sum(1 for r in results if r.status in _SKIPPED_STATUSES)
 
     return BatchSummaryReport(
         total_tasks=len(results),

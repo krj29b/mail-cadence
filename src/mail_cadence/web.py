@@ -910,7 +910,10 @@ async def trigger_dispatch_run(
 
     db_path: str = request.app.state.db_path
     options = DispatchOptions(
-        db_path=db_path, template_dir=request.app.state.template_dir, dry_run=dry_run
+        db_path=db_path,
+        template_dir=request.app.state.template_dir,
+        dry_run=dry_run,
+        source="web",
     )
     settings = _get_settings(request)
 
@@ -944,7 +947,10 @@ def run_single_task(
     task_id: str,
     request: Request,
     repo: DatabaseRepository = Depends(get_repo),
+    idempotency_key: str | None = Query(None, max_length=128),
 ) -> Response:
+    """Send a task now. A repeated request with the same ``idempotency_key`` reports the
+    earlier send instead of sending again (ADR 0001, D7)."""
     if repo.get_mail_task(task_id) is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -956,7 +962,9 @@ def run_single_task(
     settings = _get_settings(request)
 
     async def work(job: DispatchJob) -> None:
-        job.result = await dispatch_single_task(db_path, task_id, settings, template_dir)
+        job.result = await dispatch_single_task(
+            db_path, task_id, settings, template_dir, idempotency_key=idempotency_key
+        )
 
     job = _start_job(request, DispatchJob(kind="task", task_id=task_id), work)
     return _render_dispatch_status(request, job, status_code=status.HTTP_202_ACCEPTED)

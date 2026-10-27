@@ -157,13 +157,16 @@ def test_migration_gives_existing_tasks_and_schedules_version_one(tmp_path: Path
             "JOIN task_identities i ON i.uid = v.task_uid ORDER BY i.task_id"
         ).fetchall()
         legacy_state = conn.execute("SELECT last_run, last_status FROM tasks WHERE id = 'T1'")
-        executions = conn.execute("SELECT COUNT(*) FROM task_executions").fetchone()[0]
+        executions = conn.execute(
+            "SELECT state, legacy FROM task_executions ORDER BY task_uid"
+        ).fetchall()
 
         assert [tuple(r) for r in identities] == [("T1", 1, None), ("T2", 1, None)]
         assert [tuple(r) for r in versions] == [("T1", 1), ("T2", 1)]
         assert _schedule_version(conn) == 1
         assert tuple(legacy_state.fetchone()) == (NOW, "SUCCESS")
-        assert executions == 0, "legacy state is converted only when the new path is enabled"
+        # Migration 6: both legacy SUCCESS rows block their window occurrence.
+        assert [tuple(r) for r in executions] == [("SUCCEEDED", 1), ("SUCCEEDED", 1)]
 
 
 def test_repeated_init_db_changes_nothing(tmp_path: Path) -> None:
@@ -189,7 +192,7 @@ def test_interrupted_migration_resumes_without_duplicates(
             with pytest.raises(sqlite3.OperationalError, match="simulated crash"):
                 init_db(conn)
         conn.rollback()
-        assert schema_version(conn) == SCHEMA_VERSION - 1
+        assert schema_version(conn) == 4, "migration 5 did not complete"
 
         init_db(conn)
         rows = conn.execute("SELECT task_id FROM task_identities ORDER BY task_id").fetchall()

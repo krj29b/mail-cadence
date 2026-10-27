@@ -126,7 +126,6 @@ def test_in_run_retry_targets_only_transient_recipients(tmp_path: Path, sink: SM
 # --- T01: concurrent processes ---------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason=XFAIL_ADR)
 def test_t01_concurrent_processes_send_once(tmp_path: Path, sink: SMTPSink) -> None:
     db_path = _prepare(tmp_path, _task([A, B]))
     sink.hold_at = ("DATA", 1)  # the first process stays inside SMTP
@@ -151,7 +150,6 @@ def test_t01_concurrent_processes_send_once(tmp_path: Path, sink: SMTPSink) -> N
 # --- T03 / T04 / T05: per-recipient state survives the run -----------------------------
 
 
-@pytest.mark.xfail(strict=True, reason=XFAIL_ADR)
 def test_t03_restart_never_resends_to_accepted_recipient(tmp_path: Path, sink: SMTPSink) -> None:
     """A accepted, B 450; the process dies before its retry; the next run must not
     send to A again (B may be retried or left for review, but at most once)."""
@@ -173,7 +171,6 @@ def test_t03_restart_never_resends_to_accepted_recipient(tmp_path: Path, sink: S
     assert sink.accepted_count(B) <= 1
 
 
-@pytest.mark.xfail(strict=True, reason=XFAIL_ADR)
 def test_t04_next_run_skips_accepted_and_permanently_refused(
     tmp_path: Path, sink: SMTPSink
 ) -> None:
@@ -188,7 +185,6 @@ def test_t04_next_run_skips_accepted_and_permanently_refused(
     assert sink.accepted_count(A) == 1
 
 
-@pytest.mark.xfail(strict=True, reason=XFAIL_ADR)
 def test_t05_retry_budget_is_shared_across_runs(tmp_path: Path, sink: SMTPSink) -> None:
     max_retries = 1
     db_path = _prepare(tmp_path, _task([B], max_retries=max_retries))
@@ -203,7 +199,6 @@ def test_t05_retry_budget_is_shared_across_runs(tmp_path: Path, sink: SMTPSink) 
 # --- UNKNOWN: connection lost after DATA -----------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason=XFAIL_ADR)
 def test_lost_reply_after_data_is_not_resent(tmp_path: Path, sink: SMTPSink) -> None:
     """The sink accepts the message and drops the connection before replying: the
     outcome is unknown, so neither this run nor the next one may send it again."""
@@ -240,7 +235,6 @@ def _edit_while_sending(
     return db_path, [d.subject for d in sink.deliveries]
 
 
-@pytest.mark.xfail(strict=True, reason=XFAIL_ADR)
 def test_t06_old_version_result_does_not_complete_edited_task(
     tmp_path: Path, sink: SMTPSink
 ) -> None:
@@ -248,7 +242,6 @@ def test_t06_old_version_result_does_not_complete_edited_task(
     assert subjects == ["Version 1", "Version 2"]
 
 
-@pytest.mark.xfail(strict=True, reason=XFAIL_ADR)
 def test_t08_recreated_task_is_a_new_identity(tmp_path: Path, sink: SMTPSink) -> None:
     db_path, subjects = _edit_while_sending(tmp_path, sink, recreate=True)
     assert subjects == ["Version 1", "Version 2"]

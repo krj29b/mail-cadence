@@ -18,7 +18,14 @@ from email.utils import parseaddr
 from enum import StrEnum
 
 from mail_cadence.database import to_utc_iso
-from mail_cadence.models import Outcome, RecipientResult
+from mail_cadence.models import (
+    BodyTemplate,
+    ContextVar,
+    MailTask,
+    Outcome,
+    RecipientResult,
+    Recipients,
+)
 
 Clock = Callable[[], datetime]
 
@@ -80,6 +87,19 @@ class ClaimResult:
 
 
 @dataclass(frozen=True, slots=True)
+class ExecutionOutcome:
+    """What an execution achieved so far, read from its recipient rows."""
+
+    execution_id: int
+    state: str
+    accepted: tuple[str, ...]
+    failed: tuple[str, ...]
+    unknown: tuple[str, ...]
+    attempts: int
+    last_error: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class Attempt:
     attempt_id: int
     attempt_no: int
@@ -115,6 +135,25 @@ def derive_execution_state(counts: Mapping[str, int]) -> str:
     if accepted:
         return "PARTIAL"
     return "EXPIRED" if counts.get("WINDOW_EXPIRED") else "FAILED"
+
+
+def task_from_definition(definition_json: str) -> MailTask:
+    """Rebuild the task exactly as it was pinned (database.sync_definitions format)."""
+    d = json.loads(definition_json)
+    recipients: dict[str, list[str]] = {"to": [], "cc": [], "bcc": []}
+    for recipient_type, address in d["recipients"]:
+        recipients[recipient_type].append(address)
+    return MailTask(
+        id=d["id"],
+        max_retries=d["max_retries"],
+        priority=d["priority"],
+        schedule_ref=d["schedule_ref"],
+        sender=d["sender"],
+        subject=d["subject"],
+        recipients=Recipients(**recipients),
+        body_template=BodyTemplate(format=d["body_format"], template_path=d["body_template_path"]),
+        context_variables=[ContextVar(name=n, value=v) for n, v in d["context_variables"]],
+    )
 
 
 def _parse(value: str | None) -> datetime | None:
@@ -581,6 +620,85 @@ class ExecutionStoreMixin:
                 _Event("message_pinned", claim.execution_id, details={"message_id": message_id}),
             )
             return data
+
+    def pinned_task(self, claim: Claim) -> MailTask:
+        """The task definition this execution was claimed with (may differ from today's)."""
+        row = self.conn.execute(
+            "SELECT definition_json FROM task_versions WHERE task_uid = ? AND version = ?",
+            (claim.task_uid, claim.task_version),
+        ).fetchone()
+        return task_from_definition(row["definition_json"])
+
+    def pinned_message(self, execution_id: int) -> bytes | None:
+        row = self.conn.execute(
+            "SELECT message_bytes FROM task_executions WHERE execution_id = ?", (execution_id,)
+        ).fetchone()
+        return bytes(row[0]) if row is not None and row[0] is not None else None
+
+    def abort_execution(self, claim: Claim, error: str) -> str:
+        """End an execution that cannot send (e.g. its template does not render).
+
+        Recipients not yet attempted fail permanently for this execution; a new
+        generation of the task (edit or reset) is needed to send it again.
+        """
+        with self._write_transaction() as now:
+            self._owned_row(claim, now, allow_expired=True)
+            self.conn.execute(
+                "UPDATE execution_recipients SET state = 'PERMANENT_FAILURE', last_error = ?, "
+                "updated_at = ? WHERE execution_id = ? AND state IN ('PENDING', 'RETRY_WAIT')",
+                (error, to_utc_iso(now), claim.execution_id),
+            )
+            return self._settle(claim.execution_id, now, "aborted")
+
+    def execution_outcome(self, execution_id: int) -> ExecutionOutcome:
+        state = self.conn.execute(
+            "SELECT state FROM task_executions WHERE execution_id = ?", (execution_id,)
+        ).fetchone()[0]
+        rows = self.conn.execute(
+            "SELECT display_address, state, attempt_count, last_error FROM execution_recipients "
+            "WHERE execution_id = ? ORDER BY rowid",
+            (execution_id,),
+        ).fetchall()
+        by_state: dict[str, list[str]] = {"ACCEPTED": [], "UNKNOWN": [], "other": []}
+        for r in rows:
+            by_state.get(r["state"], by_state["other"]).append(r["display_address"])
+        errors = [r["last_error"] for r in rows if r["last_error"]]
+        return ExecutionOutcome(
+            execution_id=execution_id,
+            state=state,
+            accepted=tuple(by_state["ACCEPTED"]),
+            failed=tuple(by_state["other"]),
+            unknown=tuple(by_state["UNKNOWN"]),
+            attempts=int(
+                self.conn.execute(
+                    "SELECT COUNT(*) FROM delivery_attempts WHERE execution_id = ?", (execution_id,)
+                ).fetchone()[0]
+            ),
+            last_error=errors[-1] if errors else None,
+        )
+
+    def peek_claim(self, task_id: str, window_key: str) -> ClaimResult:
+        """What claim_execution would answer now, without writing anything (dry runs)."""
+        now = self._clock()
+        identity = self.conn.execute(
+            "SELECT uid, dispatch_generation FROM task_identities "
+            "WHERE task_id = ? AND deleted_at IS NULL",
+            (task_id,),
+        ).fetchone()
+        if identity is None:
+            return ClaimResult(ClaimStatus.NO_TASK)
+        rows = self.conn.execute(
+            "SELECT execution_id, state, lease_expires_at, "
+            "dispatch_generation = ? AND window_key = ? AS same_key "
+            "FROM task_executions WHERE task_uid = ?",
+            (identity["dispatch_generation"], window_key, identity["uid"]),
+        ).fetchall()
+        for row in rows:
+            if row["same_key"] and row["state"] in FINAL_STATES:
+                return ClaimResult(ClaimStatus.DONE, int(row["execution_id"]))
+            if row["state"] in OWNED_STATES and not self._lease_expired(row, now):
+                return ClaimResult(ClaimStatus.BUSY, int(row["execution_id"]))
+        return ClaimResult(ClaimStatus.CLAIMED)
 
     def next_attempt_at(self, execution_id: int) -> datetime | None:
         """When the earliest waiting recipient becomes due, or None if none waits."""

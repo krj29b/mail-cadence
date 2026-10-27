@@ -21,6 +21,10 @@ from mail_cadence.models import (
     WorkSchedules,
 )
 
+_SKIPPED_STATUSES = frozenset(
+    {TaskExecutionStatus.SKIPPED_SCHEDULE, TaskExecutionStatus.SKIPPED_BUSY}
+)
+
 
 class DatabaseRepository(ExecutionStoreMixin):
     """All database access. Execution-state methods come from ``ExecutionStoreMixin``.
@@ -75,6 +79,11 @@ class DatabaseRepository(ExecutionStoreMixin):
         ]
 
         return WorkSchedules(timezone=timezone, schedules=schedules)
+
+    def get_schedule_versions(self) -> dict[str, int]:
+        """Current version of every schedule (ADR 0001, D4); pinned on executions."""
+        rows = self.conn.execute("SELECT schedule_id, version FROM schedule_versions")
+        return {r["schedule_id"]: int(r["version"]) for r in rows}
 
     def save_work_schedules(
         self, work_schedules: WorkSchedules, mode: Literal["upsert", "replace"] = "upsert"
@@ -395,12 +404,18 @@ class DatabaseRepository(ExecutionStoreMixin):
         batch_id: str | None = None,
         dry_run: bool = False,
         executed_at: datetime | None = None,
+        execution_id: int | None = None,
     ) -> None:
         """Append an execution log entry and update the task window state.
 
         Simulated executions (``dry_run=True``) are flagged in ``execution_logs`` and never
         update the task state, so they cannot mark a task as dispatched in its window.
         ``executed_at`` overrides the ``last_run`` timestamp (defaults to the current time).
+
+        ``last_run``/``last_status`` are only a projection for the UI and the XML export
+        (ADR 0001, D15). With ``execution_id`` they are updated only if that execution
+        belongs to the task's live identity and its current version, so the result of an
+        old definition never marks an edited or re-created task as sent.
         """
         failed_recipients_str = json.dumps(result.failed_recipients)
         with self.conn:
@@ -425,18 +440,36 @@ class DatabaseRepository(ExecutionStoreMixin):
                 ),
             )
 
-            if not dry_run and result.status != TaskExecutionStatus.SKIPPED_SCHEDULE:
-                run_at = to_utc_iso(executed_at or datetime.now(UTC))
-                self.conn.execute(
-                    """
-                    UPDATE tasks
-                    SET last_run = ?,
-                        last_status = ?,
-                        last_error = ?
-                    WHERE id = ?
-                    """,
-                    (run_at, result.status.value, result.error_details, result.task_id),
-                )
+            if dry_run or result.status in _SKIPPED_STATUSES:
+                return
+            run_at = to_utc_iso(executed_at or datetime.now(UTC))
+            self.conn.execute(
+                """
+                UPDATE tasks
+                SET last_run = ?,
+                    last_status = ?,
+                    last_error = ?
+                WHERE id = ?
+                  AND (? IS NULL OR EXISTS (
+                      SELECT 1 FROM task_executions AS e
+                      JOIN task_identities AS i ON i.uid = e.task_uid
+                      WHERE e.execution_id = ?
+                        AND i.task_id = tasks.id
+                        AND i.deleted_at IS NULL
+                        AND e.task_version = (
+                            SELECT MAX(version) FROM task_versions WHERE task_uid = e.task_uid
+                        )
+                  ))
+                """,
+                (
+                    run_at,
+                    result.status.value,
+                    result.error_details,
+                    result.task_id,
+                    execution_id,
+                    execution_id,
+                ),
+            )
 
     def get_task_execution_states(
         self,

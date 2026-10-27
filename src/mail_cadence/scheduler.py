@@ -1,7 +1,7 @@
 import asyncio
 import time as time_module
 from dataclasses import dataclass
-from datetime import UTC, datetime, time, timedelta, tzinfo
+from datetime import UTC, date, datetime, time, timedelta, tzinfo
 from zoneinfo import ZoneInfo
 
 from mail_cadence.models import (
@@ -19,6 +19,7 @@ __all__ = [
     "TaskScheduler",
     "TaskWindowStatus",
     "TokenBucketRateLimiter",
+    "WindowInstance",
     "get_active_window",
     "is_day_matching",
     "is_time_in_window",
@@ -95,6 +96,32 @@ class TokenBucketRateLimiter:
 
 
 @dataclass(frozen=True, slots=True)
+class WindowInstance:
+    """One occurrence of a schedule window as UTC instants (ADR 0001, D5).
+
+    ``key`` identifies the occurrence: the schedule and the instant it starts.
+    """
+
+    schedule_id: str
+    window: HourWindow
+    start_utc: datetime
+    end_utc: datetime
+
+    @property
+    def key(self) -> str:
+        return f"{self.schedule_id}@{self.start_utc.isoformat()}"
+
+
+def _window_bounds(window: HourWindow, start_date: date, tz: ZoneInfo) -> tuple[datetime, datetime]:
+    """UTC bounds of the occurrence that starts on ``start_date`` (local, fold=0)."""
+    start_t, end_t = window.start_time, window.end_time
+    end_date = start_date if start_t <= end_t else start_date + timedelta(days=1)
+    start = datetime.combine(start_date, start_t, tzinfo=tz)
+    end = datetime.combine(end_date, end_t, tzinfo=tz)
+    return start.astimezone(UTC), end.astimezone(UTC)
+
+
+@dataclass(frozen=True, slots=True)
 class TaskWindowStatus:
     """Outcome of evaluating a task against its schedule at a reference time."""
 
@@ -130,6 +157,9 @@ class TaskScheduler:
             s.id: s for s in self.work_schedules.schedules
         }
 
+    def has_schedule(self, schedule_id: str) -> bool:
+        return schedule_id in self._schedules_by_id
+
     def now(self) -> datetime:
         """Current time in the schedules' timezone."""
         return datetime.now(self.timezone)
@@ -142,6 +172,29 @@ class TaskScheduler:
         if schedule is None:
             return None
         return get_active_window(schedule, self._normalize_dt(reference_dt))
+
+    def window_instance(
+        self, schedule_id: str, reference_dt: datetime | None = None
+    ) -> WindowInstance | None:
+        """The window occurrence of ``schedule_id`` that contains ``reference_dt``.
+
+        Activity is decided by comparing UTC instants, so during the repeated hour of a
+        DST change only the first occurrence of a local time is inside a window. The
+        first window in configuration order wins when windows overlap.
+        """
+        schedule = self._schedules_by_id.get(schedule_id)
+        if schedule is None:
+            return None
+        ref_utc = self._normalize_dt(reference_dt).astimezone(UTC)
+        local_date = ref_utc.astimezone(self.timezone).date()
+        for window in schedule.allowed_hours:
+            for start_date in (local_date, local_date - timedelta(days=1)):
+                if not is_day_matching(window.days_of_week, start_date.weekday()):
+                    continue
+                start_utc, end_utc = _window_bounds(window, start_date, self.timezone)
+                if start_utc <= ref_utc <= end_utc:
+                    return WindowInstance(schedule_id, window, start_utc, end_utc)
+        return None
 
     def window_status(
         self,

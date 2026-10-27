@@ -67,7 +67,11 @@ class TaskExecutionStatus(StrEnum):
     SUCCESS = "SUCCESS"
     PARTIAL = "PARTIAL"
     FAILED = "FAILED"
+    # Some recipients may or may not have the message; never resent automatically.
+    UNKNOWN = "UNKNOWN"
     SKIPPED_SCHEDULE = "SKIPPED_SCHEDULE"
+    # Another worker owns the task right now (ADR 0001, D7).
+    SKIPPED_BUSY = "SKIPPED_BUSY"
 
 
 def _check_no_newlines(value: str | None, field_name: str) -> None:

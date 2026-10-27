@@ -80,7 +80,7 @@ sudo systemctl enable --now mail-cadence-web.service
 systemctl list-timers mail-cadence-dispatch.timer
 ```
 
-Exit codes of a run: `0` success, `1` configuration or database error, `2` one or more tasks failed or were delivered only partially, `4` the tasks succeeded but the status report was not sent. Every non-zero code marks the unit as failed, so they show up in `systemctl --failed`; add an `OnFailure=` unit if you want a notification.
+Exit codes of a run: `0` success, `1` configuration or database error, `2` one or more tasks failed or were delivered only partially, `3` the outcome of a delivery is unknown and needs review (never resent automatically), `4` the tasks succeeded but the status report was not sent. Every non-zero code marks the unit as failed, so they show up in `systemctl --failed`; add an `OnFailure=` unit if you want a notification.
 
 ## Web panel behind nginx
 
@@ -120,5 +120,7 @@ sudo -u mail-cadence sqlite3 /var/lib/mail-cadence/mail_cadence.db ".backup '/va
 sudo /opt/mail-cadence/venv/bin/pip install mail-cadence==X.Y.Z
 sudo systemctl start mail-cadence-web.service mail-cadence-dispatch.timer
 ```
+
+Upgrading to the release with durable execution state (schema version 6, ADR 0001): stop the timer and the web panel first, so that no run of the old version sends while the new one claims tasks, take the backup above, then start the new version. Migration 6 turns the old `last_run`/`last_status` into executions: a task sent in the current window stays blocked for that window; a task that failed or was delivered partially is marked for review (exit code `3` until the window ends). Rolling back to the backup forgets everything sent after it; check the SMTP server's log before sending again.
 
 The first start of a new version migrates the database in place (see "Database Upgrades" in the README); a database written by a newer version is refused. Use `sqlite3 .backup` (or stop the services first) rather than copying the file, so the WAL contents are included.

@@ -3,6 +3,7 @@
 import os
 import subprocess
 import sys
+from collections.abc import Sequence
 from contextlib import closing
 from datetime import datetime
 from pathlib import Path
@@ -12,7 +13,14 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from mail_cadence.database import get_connection, init_db
-from mail_cadence.models import Settings, TaskExecutionResult, TaskExecutionStatus
+from mail_cadence.mailer import AsyncMailer
+from mail_cadence.models import (
+    Outcome,
+    RecipientResult,
+    Settings,
+    TaskExecutionResult,
+    TaskExecutionStatus,
+)
 from mail_cadence.pipeline import (
     EXIT_CONFIG_ERROR,
     EXIT_OK,
@@ -24,6 +32,15 @@ from mail_cadence.pipeline import (
 from mail_cadence.repository import DatabaseRepository
 
 SAMPLES = Path(__file__).resolve().parents[1] / "config" / "samples"
+
+
+async def _accept_all(
+    _mailer: AsyncMailer, _data: bytes, recipients: Sequence[str]
+) -> dict[str, RecipientResult]:
+    """Stands in for AsyncMailer.deliver: the server accepts every recipient."""
+    return {r: RecipientResult(Outcome.ACCEPTED, 250) for r in recipients}
+
+
 # 08:00 in Warsaw: the sample morning schedule (06:00-12:00) is active.
 MORNING = datetime(2026, 10, 17, 8, 0, tzinfo=ZoneInfo("Europe/Warsaw"))
 
@@ -98,10 +115,7 @@ async def test_dispatch_single_task_unknown_task_raises(tmp_path: Path) -> None:
 async def test_dispatch_single_task_logs_result(tmp_path: Path) -> None:
     db_path = tmp_path / "single.db"
     assert await run_dispatch(_options(db_path), Settings()) == EXIT_OK
-    ok = AsyncMock(
-        return_value=TaskExecutionResult(task_id="TASK-001", status=TaskExecutionStatus.SUCCESS)
-    )
-    with patch("mail_cadence.pipeline.AsyncMailer.dispatch_task", ok):
+    with patch.object(AsyncMailer, "deliver", _accept_all):
         result = await dispatch_single_task(db_path, "TASK-001", Settings())
 
     assert result.status == TaskExecutionStatus.SUCCESS

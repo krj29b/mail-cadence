@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from mail_cadence.models import MAX_RETRIES_LIMIT
+from mail_cadence.scheduler import TaskScheduler
 
 BASE_SCHEMA_SQL = """
 PRAGMA foreign_keys = ON;
@@ -489,12 +490,104 @@ def _migrate_execution_state(conn: sqlite3.Connection) -> None:
     sync_definitions(conn)
 
 
+# Legacy tasks.last_status -> state of a synthetic execution (ADR 0001, D17).
+# PARTIAL and FAILED rows cannot tell which recipients were accepted: review them.
+_LEGACY_STATES = {"SUCCESS": "SUCCEEDED", "PARTIAL": "NEEDS_REVIEW", "FAILED": "NEEDS_REVIEW"}
+
+
+def _parse_legacy_time(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _legacy_event(
+    conn: sqlite3.Connection, kind: str, task_uid: int, reason: str, now: str
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO execution_events (occurred_at, kind, task_uid, reason)
+        SELECT ?, ?, ?, ?
+        WHERE NOT EXISTS (SELECT 1 FROM execution_events WHERE kind = ? AND task_uid = ?)
+        """,
+        (now, kind, task_uid, reason, kind, task_uid),
+    )
+
+
+def _convert_legacy_row(
+    conn: sqlite3.Connection, scheduler: TaskScheduler, row: sqlite3.Row, now: str
+) -> None:
+    state = _LEGACY_STATES.get(row["last_status"])
+    if state is None:
+        return
+    last_run = _parse_legacy_time(row["last_run"])
+    instance = scheduler.window_instance(row["schedule_ref"], last_run) if last_run else None
+    if instance is None:
+        reason = f"{row['last_status']} at {row['last_run']!r} matches no window occurrence"
+        _legacy_event(conn, "legacy_state_dropped", row["uid"], reason, now)
+        return
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO task_executions
+        (task_uid, dispatch_generation, window_key, task_version, window_start, window_end,
+         state, legacy, created_at, finished_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+        """,
+        (
+            row["uid"],
+            row["dispatch_generation"],
+            instance.key,
+            row["version"],
+            to_utc_iso(instance.start_utc),
+            to_utc_iso(instance.end_utc),
+            state,
+            now,
+            now,
+        ),
+    )
+    reason = f"{row['last_status']} in {instance.key}"
+    _legacy_event(conn, "legacy_state_converted", row["uid"], reason, now)
+
+
+def _migrate_legacy_window_state(conn: sqlite3.Connection) -> None:
+    """6: the old path's last_run/last_status become executions (ADR 0001, D17).
+
+    A legacy SUCCESS blocks the window occurrence that contains last_run; PARTIAL and
+    FAILED block it as NEEDS_REVIEW. Later occurrences are free. A time that matches no
+    occurrence (or cannot be parsed) only leaves an event, as the old path ignored it.
+    """
+    # Imported here: repository imports this module.
+    from mail_cadence.repository import DatabaseRepository
+
+    try:
+        scheduler = TaskScheduler(DatabaseRepository(conn).get_work_schedules())
+    except ValueError:
+        return  # schedules that do not validate cannot be mapped; dispatch fails anyway
+    rows = conn.execute(
+        """
+        SELECT t.schedule_ref, t.last_run, t.last_status, i.uid, i.dispatch_generation,
+               (SELECT MAX(version) FROM task_versions WHERE task_uid = i.uid) AS version
+        FROM tasks AS t
+        JOIN task_identities AS i ON i.task_id = t.id AND i.deleted_at IS NULL
+        WHERE t.last_status IS NOT NULL
+        """
+    ).fetchall()
+    now = to_utc_iso(datetime.now(UTC))
+    for row in rows:
+        _convert_legacy_row(conn, scheduler, row, now)
+
+
 MIGRATIONS: tuple[Callable[[sqlite3.Connection], None], ...] = (
     _migrate_base_schema,
     _migrate_task_validation,
     _migrate_executed_at_to_iso,
     _migrate_report_subject_prefix_newlines,
     _migrate_execution_state,
+    _migrate_legacy_window_state,
 )
 SCHEMA_VERSION = len(MIGRATIONS)
 
