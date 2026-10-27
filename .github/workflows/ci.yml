@@ -104,8 +104,10 @@ jobs:
           uv pip install -p .venv-lowest --resolution lowest-direct -e ".[dev]"
           uv pip list -p .venv-lowest
 
+      # The oldest allowed fastapi/typer use APIs that their newer transitive
+      # dependencies (anyio, click) deprecate; report those instead of failing.
       - name: Pytest
-        run: .venv-lowest/bin/python -m pytest
+        run: .venv-lowest/bin/python -m pytest -W default::DeprecationWarning
 
   assets:
     name: Panel assets match a fresh build

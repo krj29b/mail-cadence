@@ -412,7 +412,7 @@ sequenceDiagram
         Runner->>Reporter: send_report(report, report_settings, mailer)
         Reporter->>SMTP: Send status report email
     end
-    Runner-->>CLI: Complete execution (Exit Code 0, 1, or 2)
+    Runner-->>CLI: Complete execution (Exit Code 0, 1, 2 or 4)
 ```
 
 ---
@@ -481,5 +481,5 @@ stateDiagram-v2
 - TLS certificates are verified (aiosmtplib default); there is no setting to turn that off.
 
 ### 4. SMTP Header Injection Prevention
-- Header string fields (`sender`, `recipient`, `subject`, `to`, `cc`, `bcc`) are validated using `_check_no_newlines` Pydantic validators in `models.py`; address fields additionally go through `_check_email_address` (one parseable address per entry).
+- Header string fields (`sender`, `recipient`, `subject`, `subject_prefix`, `to`, `cc`, `bcc`) are validated using `_check_no_newlines` Pydantic validators in `models.py`; address fields additionally go through `_check_email_address` (one parseable address per entry).
 - Rejects inputs containing CR (`\r`) or LF (`\n`) characters, preventing SMTP command injection and unauthorized header injection.

@@ -49,7 +49,7 @@ async def test_run_dispatch_uses_given_settings_and_db(tmp_path: Path) -> None:
     with closing(get_connection(db_path)) as conn:
         logs = DatabaseRepository(conn).get_recent_execution_logs(limit=50)
     assert logs, "the run must log into the database it was given"
-    assert all(log["dry_run"] == 1 for log in logs if log["status"] != "SKIPPED_SCHEDULE")
+    assert all(log["dry_run"] == 1 for log in logs)
 
 
 @pytest.mark.asyncio

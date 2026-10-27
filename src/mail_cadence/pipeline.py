@@ -37,6 +37,8 @@ logger = logging.getLogger(__name__)
 EXIT_OK = 0
 EXIT_CONFIG_ERROR = 1
 EXIT_TASK_FAILED = 2
+# 3 is reserved for deliveries with an unknown outcome.
+EXIT_REPORT_FAILED = 4
 
 ExecutionStates = dict[str, tuple[datetime | None, TaskExecutionStatus | None]]
 ScheduledTask = tuple[MailTask, TokenBucketRateLimiter, asyncio.Semaphore]
@@ -63,7 +65,12 @@ class _LoadedConfig:
 
 
 async def run_dispatch(options: DispatchOptions, settings: Settings) -> int:
-    """Run one dispatch batch. Returns 0 (ok), 1 (configuration error) or 2 (a task failed)."""
+    """Run one dispatch batch and return its exit code.
+
+    0: ok; 1: configuration or database error; 2: a task failed or was delivered only
+    partially; 4: all tasks ok, but the status report was not sent. A task problem (2)
+    takes precedence over a report problem (4).
+    """
     if not options.dry_run and settings.smtp_auth_blocked:
         logger.error(f"Configuration error: {INSECURE_SMTP_AUTH_MESSAGE}")
         return EXIT_CONFIG_ERROR
@@ -91,7 +98,9 @@ async def run_dispatch(options: DispatchOptions, settings: Settings) -> int:
             return EXIT_OK
 
         batch_id = str(uuid.uuid4())
-        scheduled, results = _partition_eligible_tasks(loaded, options.ref_dt, repo, batch_id)
+        scheduled, results = _partition_eligible_tasks(
+            loaded, options.ref_dt, repo, batch_id, dry_run=options.dry_run
+        )
         logger.info(f"Scheduled {len(scheduled)} tasks for execution ({len(results)} skipped).")
 
         renderer = TemplateRenderer(template_dir=options.template_dir)
@@ -99,12 +108,18 @@ async def run_dispatch(options: DispatchOptions, settings: Settings) -> int:
         async with mailer:
             results.extend(await _execute_tasks(mailer, scheduled, repo, batch_id, options))
             report = aggregate_summary_report(results, start_time, datetime.now(UTC))
-            await _send_report_if_needed(
+            report_ok = await _send_report_if_needed(
                 report, loaded.mail_config, repo.has_report_settings(), mailer
             )
 
     logger.info("MailCadence execution complete.")
-    return EXIT_OK if report.failed_tasks == 0 else EXIT_TASK_FAILED
+    return _exit_code(report, report_ok=report_ok)
+
+
+def _exit_code(report: BatchSummaryReport, *, report_ok: bool) -> int:
+    if report.failed_tasks or report.partial_tasks:
+        return EXIT_TASK_FAILED
+    return EXIT_OK if report_ok else EXIT_REPORT_FAILED
 
 
 async def dispatch_single_task(
@@ -158,6 +173,8 @@ def _partition_eligible_tasks(
     ref_dt: datetime | None,
     repo: DatabaseRepository,
     batch_id: str,
+    *,
+    dry_run: bool,
 ) -> tuple[list[ScheduledTask], list[TaskExecutionResult]]:
     """Split tasks into scheduled ones (with shared per-window limits) and logged skips."""
     scheduler = TaskScheduler(loaded.work_schedules)
@@ -192,7 +209,7 @@ def _partition_eligible_tasks(
             error_details=reason,
         )
         skipped.append(result)
-        repo.log_task_execution(result, batch_id=batch_id)
+        repo.log_task_execution(result, batch_id=batch_id, dry_run=dry_run)
 
     return scheduled, skipped
 
@@ -230,12 +247,13 @@ async def _send_report_if_needed(
     mail_config: MailConfiguration,
     has_report_settings: bool,
     mailer: AsyncMailer,
-) -> None:
+) -> bool:
+    """Send the status report when one is due; False only if sending it failed."""
     executed = report.successful_tasks + report.partial_tasks + report.failed_tasks
     if executed == 0:
         logger.info("No tasks were executed in this batch; status report not sent.")
-        return
+        return True
     if not has_report_settings:
         logger.warning("Report settings are not configured; status report not sent.")
-        return
-    await ReportGenerator().send_report(report, mail_config.report_settings, mailer)
+        return True
+    return await ReportGenerator().send_report(report, mail_config.report_settings, mailer)

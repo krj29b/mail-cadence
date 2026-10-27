@@ -175,10 +175,24 @@ def _migrate_executed_at_to_iso(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_report_subject_prefix_newlines(conn: sqlite3.Connection) -> None:
+    """4: CR/LF in the report subject prefix (now rejected) -> one space per line break."""
+    conn.execute(
+        """
+        UPDATE report_settings
+        SET subject_prefix = replace(replace(replace(subject_prefix,
+            char(13) || char(10), ' '), char(13), ' '), char(10), ' ')
+        WHERE subject_prefix LIKE '%' || char(13) || '%'
+           OR subject_prefix LIKE '%' || char(10) || '%'
+        """
+    )
+
+
 MIGRATIONS: tuple[Callable[[sqlite3.Connection], None], ...] = (
     _migrate_base_schema,
     _migrate_task_validation,
     _migrate_executed_at_to_iso,
+    _migrate_report_subject_prefix_newlines,
 )
 SCHEMA_VERSION = len(MIGRATIONS)
 

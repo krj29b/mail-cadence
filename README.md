@@ -108,7 +108,8 @@ mail-cadence [OPTIONS]
 #### Exit Codes
 - **`0`**: Successful execution or no tasks were eligible for processing.
 - **`1`**: Configuration or database error encountered (e.g. invalid file format, database connection failure).
-- **`2`**: One or more tasks failed execution during the dispatch batch.
+- **`2`**: One or more tasks failed or were delivered only partially (some recipients did not receive the message). Takes precedence over `4`.
+- **`4`**: All executed tasks succeeded, but the status report email could not be sent.
 
 #### Example Dispatch Commands
 ```bash
@@ -291,7 +292,8 @@ async def main() -> None:
     )
 
     # 2. Run the scheduler & SMTP dispatch pipeline (respects active HourWindows)
-    #    (exit code: 0 = ok, 1 = configuration error, 2 = a task failed)
+    #    (exit code: 0 = ok, 1 = configuration error, 2 = a task failed or was partial,
+#     4 = status report not sent)
     exit_code = await run_dispatch(DispatchOptions(db_path=DB_PATH), Settings.load())
     print(f"Dispatch finished with exit code: {exit_code}")
 

@@ -85,6 +85,7 @@ class ReportSettings(BaseXmlModel, tag="ReportSettings"):
     def validate_addresses(self) -> Self:
         _check_email_address(self.recipient, "recipient")
         _check_email_address(self.sender or None, "sender")
+        _check_no_newlines(self.subject_prefix, "subject_prefix")
         return self
 
 

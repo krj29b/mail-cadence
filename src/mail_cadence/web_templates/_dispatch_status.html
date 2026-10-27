@@ -21,7 +21,8 @@
       <div class="{{ 'alert-success' if job.exit_code == 0 else 'alert-error' }}">
         {{ label }} finished{% if job.dry_run %} (dry run){% endif %}:
         {% if job.exit_code == 0 %}all executed tasks succeeded
-        {% elif job.exit_code == 2 %}one or more tasks failed
+        {% elif job.exit_code == 2 %}one or more tasks failed or were delivered only partially
+        {% elif job.exit_code == 4 %}all executed tasks succeeded, but the status report was not sent
         {% else %}configuration or database error (exit code {{ job.exit_code }}){% endif %}.
         <a href="/" class="underline">Refresh</a> to see the results.
       </div>
