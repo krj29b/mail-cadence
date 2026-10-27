@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 
 from mail_cadence.database import sync_definitions, to_utc_iso
+from mail_cadence.execution_store import Clock, ExecutionStoreMixin
 from mail_cadence.models import (
     BodyTemplate,
     ContextVar,
@@ -21,9 +22,15 @@ from mail_cadence.models import (
 )
 
 
-class DatabaseRepository:
-    def __init__(self, conn: sqlite3.Connection) -> None:
+class DatabaseRepository(ExecutionStoreMixin):
+    """All database access. Execution-state methods come from ``ExecutionStoreMixin``.
+
+    ``clock`` supplies the wall-clock time for leases and events (tests pass a fake).
+    """
+
+    def __init__(self, conn: sqlite3.Connection, clock: Clock | None = None) -> None:
         self.conn = conn
+        self._clock = clock or (lambda: datetime.now(UTC))
 
     # --- WorkSchedules Operations ---
 
