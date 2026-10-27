@@ -15,7 +15,7 @@
     {% if execution.legacy %}&middot; converted from the old last_run/last_status{% endif %}
   </p>
   <p class="text-xs text-slate-500 mt-1 font-mono">
-    Message-ID: {{ execution.message_id or "not rendered" }}
+    Message-ID: {{ execution.message_id or "not rendered" }}{% if execution.message_id and not execution.has_message %} (content removed after the retention period){% endif %}
     {% if execution.owner %}&middot; owner {{ execution.owner }} until {{ execution.lease_expires_at | utc_time }}{% endif %}
   </p>
 </div>

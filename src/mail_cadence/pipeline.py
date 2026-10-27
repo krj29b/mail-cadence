@@ -201,6 +201,9 @@ async def _dispatch(
         recovered = repo.recover_abandoned()
         if recovered:
             logger.warning(f"Recovered abandoned executions {recovered}; see NEEDS_REVIEW.")
+        purged = repo.purge_message_contents()
+        if purged:
+            logger.info(f"Dropped the stored content of {purged} finished deliveries (retention).")
         plan = _plan(run, loaded)
     except sqlite3.Error as exc:
         logger.error(f"Database error while claiming tasks: {exc}")

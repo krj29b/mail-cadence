@@ -17,6 +17,13 @@ from mail_cadence.models import Outcome, RecipientResult
 
 REPORT_SENDABLE = ("PENDING", "RETRY_WAIT")
 
+# Stored message bytes are dropped this long after the delivery is over (ADR 0001, D16).
+# Message-IDs, recipient states, attempts and events stay: they are the audit trail.
+MESSAGE_RETENTION = timedelta(days=30)
+# NEEDS_REVIEW keeps its message: "Send again" must send the same bytes, however late.
+_PURGEABLE_EXECUTIONS = ("SUCCEEDED", "PARTIAL", "FAILED", "EXPIRED")
+_PURGEABLE_REPORTS = ("ACCEPTED", "PERMANENT_FAILURE", "RETRY_EXHAUSTED", "UNKNOWN")
+
 
 @dataclass(frozen=True, slots=True)
 class ReportClaim:
@@ -25,6 +32,10 @@ class ReportClaim:
     fencing_token: int
     recipient: str
     data: bytes
+
+
+def _ended_before(stamp: str | None, cutoff: datetime) -> bool:
+    return stamp is not None and datetime.fromisoformat(stamp) < cutoff
 
 
 def _report_state(result: RecipientResult, attempts: int, max_attempts: int) -> str:
@@ -152,6 +163,51 @@ class ReportStoreMixin(ExecutionStoreMixin):
             )
             self._report_event(now, "report_attempt_finished", claim.report_id, {"state": state})
             return state
+
+    def purge_message_contents(self, retention: timedelta = MESSAGE_RETENTION) -> int:
+        """Drop stored message bytes of deliveries that ended more than ``retention`` ago.
+
+        Returns how many messages were dropped. Executions that still wait for work or
+        for an operator decision keep their message.
+        """
+        with self._write_transaction() as now:
+            cutoff = now - retention
+            executions = [
+                (r["execution_id"],)
+                for r in self.conn.execute(
+                    "SELECT execution_id, finished_at FROM task_executions "
+                    "WHERE message_bytes IS NOT NULL AND state IN (?, ?, ?, ?)",
+                    _PURGEABLE_EXECUTIONS,
+                )
+                if _ended_before(r["finished_at"], cutoff)
+            ]
+            reports = [
+                (r["report_id"],)
+                for r in self.conn.execute(
+                    "SELECT report_id, updated_at FROM report_deliveries "
+                    "WHERE message_bytes IS NOT NULL AND state IN (?, ?, ?, ?)",
+                    _PURGEABLE_REPORTS,
+                )
+                if _ended_before(r["updated_at"], cutoff)
+            ]
+            self.conn.executemany(
+                "UPDATE task_executions SET message_bytes = NULL WHERE execution_id = ?",
+                executions,
+            )
+            self.conn.executemany(
+                "UPDATE report_deliveries SET message_bytes = NULL WHERE report_id = ?", reports
+            )
+            purged = len(executions) + len(reports)
+            if purged:
+                self.conn.execute(
+                    "INSERT INTO execution_events (occurred_at, kind, details_json) "
+                    "VALUES (?, 'messages_purged', ?)",
+                    (
+                        to_utc_iso(now),
+                        json.dumps({"executions": len(executions), "reports": len(reports)}),
+                    ),
+                )
+            return purged
 
     def list_report_deliveries(self, limit: int = 20) -> list[dict[str, object]]:
         rows = self.conn.execute(

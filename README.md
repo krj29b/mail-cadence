@@ -129,6 +129,8 @@ Before anything is sent, a run claims each task for its window occurrence in the
 
 When a run executed at least one task and report settings are configured, its report is rendered once and stored. A report that was not accepted is retried by the following runs from the same stored message, one attempt per run and at most three in total; a refusal with a 5xx code or an unknown outcome ends it. A failed report never resends task messages. Exit code `4` means that a report handled in this run (its own or an earlier one retried) is not confirmed.
 
+Stored messages (task and report) are deleted 30 days after their delivery is over; the Message-ID, the per-recipient outcomes, the attempts and the event history are kept. A delivery that still needs review keeps its message.
+
 #### Reviewing unknown deliveries
 
 The web panel's **Executions** page lists every execution with its task version, window occurrence and recipient progress; "Needs review" filters the ones with an unknown outcome, and the dashboard shows how many there are. The page of an execution shows each recipient, every attempt and the event history. For a recipient in state `UNKNOWN`, check the SMTP server's log for the Message-ID shown on the page, then record a decision with a reason:
