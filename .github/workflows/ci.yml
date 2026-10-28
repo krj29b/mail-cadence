@@ -104,10 +104,17 @@ jobs:
           uv pip install -p .venv-lowest --resolution lowest-direct -e ".[dev]"
           uv pip list -p .venv-lowest
 
-      # The oldest allowed fastapi/typer use APIs that their newer transitive
-      # dependencies (anyio, click) deprecate; report those instead of failing.
+      # Warnings are errors here as in every other job. The oldest allowed typer
+      # (0.13) and starlette (0.38, via fastapi 0.115) use names that the newest
+      # click (8.5) and anyio deprecate; only these three warnings, raised inside
+      # typer and starlette, are ignored. typer stops importing them once it
+      # vendors click, starlette in 1.7.0.
       - name: Pytest
-        run: .venv-lowest/bin/python -m pytest -W default::DeprecationWarning
+        run: >-
+          .venv-lowest/bin/python -m pytest
+          -W "ignore:'click.utils.get_binary_stream' is deprecated:DeprecationWarning:typer"
+          -W "ignore:'click.utils.get_text_stream' is deprecated:DeprecationWarning:typer"
+          -W "ignore:The anyio.abc.BlockingPortal alias is deprecated:DeprecationWarning:starlette.testclient"
 
   # The race and failure tests of ADR 0001, 50 times per OS (2 shards x 25 runs).
   # Pull requests and pushes run each of them once per OS and Python version in
