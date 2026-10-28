@@ -7,9 +7,10 @@ from collections.abc import Sequence
 from contextlib import closing
 from datetime import datetime
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
+import jinja2
 import pytest
 
 from mail_cadence.database import get_connection, init_db
@@ -18,7 +19,6 @@ from mail_cadence.models import (
     Outcome,
     RecipientResult,
     Settings,
-    TaskExecutionResult,
     TaskExecutionStatus,
 )
 from mail_cadence.pipeline import (
@@ -70,15 +70,20 @@ async def test_run_dispatch_uses_given_settings_and_db(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_dispatch_reports_failed_task(tmp_path: Path) -> None:
-    failed = AsyncMock(
-        side_effect=lambda task, rate_limiter=None: TaskExecutionResult(
-            task_id=task.id, status=TaskExecutionStatus.FAILED
-        )
-    )
-    with patch("mail_cadence.pipeline.AsyncMailer.dispatch_task", failed):
-        code = await run_dispatch(_options(tmp_path / "failed.db"), Settings())
+async def test_dry_run_fails_a_task_whose_template_cannot_be_rendered(tmp_path: Path) -> None:
+    db_path = tmp_path / "failed.db"
+    broken = jinja2.TemplateNotFound("builtin:daily_dispatch.html.j2")
+    with patch.object(AsyncMailer, "render_task_message", side_effect=broken):
+        code = await run_dispatch(_options(db_path), Settings())
+
     assert code == EXIT_TASK_FAILED
+    with closing(get_connection(db_path)) as conn:
+        row = conn.execute(
+            "SELECT status, error_details, dry_run FROM execution_logs WHERE task_id = 'TASK-001'"
+        ).fetchone()
+    assert row["status"] == TaskExecutionStatus.FAILED.value
+    assert row["error_details"].startswith("Template rendering error:")
+    assert row["dry_run"] == 1
 
 
 @pytest.mark.asyncio

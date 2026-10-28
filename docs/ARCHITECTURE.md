@@ -372,51 +372,50 @@ sequenceDiagram
         Repo->>DB: import_configuration (single transaction)
     end
 
-    Runner->>Repo: get_mail_configuration(), get_work_schedules(), get_task_execution_states()
-    Repo-->>Runner: MailConfiguration, WorkSchedules, last_run / last_status per task
+    Runner->>Repo: get_mail_configuration(), get_work_schedules(), get_schedule_versions()
+    Repo-->>Runner: MailConfiguration, WorkSchedules, schedule versions
 
-    loop For each task
-        Runner->>Sched: window_status(task, ref_dt, last_run, last_status)
-        alt Eligible (active window, not yet dispatched in it)
-            Runner->>Runner: Reuse or create Semaphore + TokenBucketRateLimiter for (schedule_ref, start, end)
-        else Not eligible
-            Runner->>Repo: log_task_execution(SKIPPED_SCHEDULE)
+    alt Dry run
+        loop For each task
+            Runner->>Sched: window_instance(schedule_ref, ref_dt)
+            Runner->>Repo: peek_claim(task, window key) (read only)
         end
-    end
-
-    Runner->>Runner: Sort eligible tasks by priority (high, normal, low), then id
-    Note over Runner,Mailer: Priority only sets the start order. All eligible tasks run in one asyncio.TaskGroup, limited per window by the shared Semaphore and rate limiter.
-
-    par One coroutine per eligible task (asyncio.TaskGroup)
-        Runner->>Runner: Acquire window Semaphore
-        Runner->>Mailer: dispatch_task(task, rate_limiter)
-        Mailer->>Mailer: Render Jinja2 template & build EmailMessage
-
-        loop Delivery attempts (1 to max_retries + 1)
-            Mailer->>Mailer: rate_limiter.acquire()
-            Mailer->>Mailer: Acquire SMTP client (_acquire_smtp_client)
-            Mailer->>SMTP: send_message(msg, pending_recipients)
-            alt Success (2xx for all pending recipients)
-                SMTP-->>Mailer: 250 OK
-            else Transient error (4xx / connection error)
-                SMTP-->>Mailer: 4xx Error / Connection Error
-                Mailer->>Mailer: Backoff delay: 0.5 * 2^(attempt - 1), retry 4xx recipients only
-            else Permanent error (5xx)
-                SMTP-->>Mailer: 5xx Error
-                Mailer->>Mailer: Drop 5xx recipients, no retry for them
+        Runner->>Mailer: render_task_message(task) per open task, by priority
+        Note over Runner,Mailer: Same rendering and snapshot as a real run. No SMTP connection, no rate-limit wait, no execution state written. Logged with dry_run = 1. The report is rendered and logged.
+    else Real run
+        Runner->>Repo: start_run, recover_abandoned, purge_message_contents
+        loop For each task
+            Runner->>Sched: window_instance(schedule_ref, ref_dt)
+            alt Window open
+                Runner->>Repo: claim_execution(task, window key, owner)
+                Note over Runner,Repo: CLAIMED: reuse or create the Semaphore and TokenBucketRateLimiter of this window occurrence. BUSY / REVIEW / DONE: logged as skipped.
+            else Window closed
+                Runner->>Repo: log_task_execution(SKIPPED_SCHEDULE)
             end
         end
 
-        Mailer-->>Runner: TaskExecutionResult (SUCCESS / PARTIAL / FAILED)
-        Runner->>Repo: log_task_execution(result, batch_id, dry_run)
-        Repo->>DB: INSERT execution_logs (+ UPDATE tasks state unless dry run)
-    end
+        Runner->>Repo: claim_reports (unconfirmed reports of earlier runs)
+        Runner->>Mailer: deliver(report bytes, [recipient])
+        Note over Runner,Mailer: Claimed tasks start by priority (high, normal, low), then id, in one asyncio.TaskGroup, limited per window by the shared Semaphore and rate limiter.
 
-    Runner->>Reporter: aggregate_summary_report(results, start, end)
-    Reporter-->>Runner: BatchSummaryReport
-    opt At least one task executed and report_settings configured
-        Runner->>Reporter: send_report(report, report_settings, mailer)
-        Reporter->>SMTP: Send status report email
+        par One coroutine per claimed task (asyncio.TaskGroup)
+            Runner->>Mailer: render_task_message(pinned definition) on the first attempt
+            Runner->>Repo: pin_message (Message-ID + bytes stored once)
+            loop Until no recipient is due (pipeline._drive)
+                Runner->>Runner: rate_limiter.acquire()
+                Runner->>Repo: start_attempt (recipients in PENDING / RETRY_WAIT)
+                Runner->>Mailer: deliver(stored bytes, recipients)
+                Mailer->>SMTP: MAIL FROM, RCPT TO per recipient, DATA
+                SMTP-->>Mailer: reply per phase
+                Mailer-->>Runner: Outcome per recipient (ACCEPTED / PERMANENT / TRANSIENT / UNKNOWN)
+                Runner->>Repo: record_attempt_result (TRANSIENT: RETRY_WAIT with backoff until max_retries + 1 attempts)
+            end
+            Runner->>Repo: release_execution, log_task_execution(result)
+        end
+
+        Runner->>Reporter: aggregate_summary_report, render_report_message
+        Runner->>Repo: create_report, claim_reports
+        Runner->>Mailer: deliver(report bytes, [recipient])
     end
     Runner-->>CLI: Complete execution (Exit Code 0, 1, 2 or 4)
 ```

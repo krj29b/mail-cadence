@@ -5,14 +5,13 @@ from pathlib import Path
 import jinja2
 import pytest
 
-from mail_cadence.mailer import AsyncMailer, EmptyBodyError, TemplateRenderer
+from mail_cadence.mailer import RENDER_ERRORS, AsyncMailer, EmptyBodyError, TemplateRenderer
 from mail_cadence.models import (
     BodyTemplate,
     ContextVar,
     MailTask,
     Recipients,
     Settings,
-    TaskExecutionStatus,
 )
 
 
@@ -38,25 +37,12 @@ def _task(template: str, fmt: str = "html", **variables: str) -> MailTask:
         ("<p>{{ name </p>", "html"),  # syntax error
     ],
 )
-@pytest.mark.asyncio
-async def test_broken_template_fails_task_without_sending(
-    tmp_path: Path, content: str, fmt: str
-) -> None:
+def test_broken_template_raises_a_render_error(tmp_path: Path, content: str, fmt: str) -> None:
+    """Real runs abort the execution and dry runs fail the task on these errors."""
     (tmp_path / "t.j2").write_text(content, encoding="utf-8")
-    mailer = AsyncMailer(Settings(), renderer=TemplateRenderer(tmp_path), dry_run=True)
-    sent: list[object] = []
-
-    async def fake_send(**kwargs: object) -> tuple[bool, str | None, dict[str, object]]:
-        sent.append(kwargs)
-        return True, None, {}
-
-    mailer.send_single_message = fake_send  # type: ignore[method-assign,assignment]
-    result = await mailer.dispatch_task(_task("t.j2", fmt=fmt, name="Ann"))
-
-    assert result.status == TaskExecutionStatus.FAILED
-    assert result.error_details is not None
-    assert result.error_details.startswith("Template rendering error:")
-    assert sent == []
+    mailer = AsyncMailer(Settings(), renderer=TemplateRenderer(tmp_path))
+    with pytest.raises(RENDER_ERRORS):
+        mailer.render_task_message(_task("t.j2", fmt=fmt, name="Ann"))
 
 
 def test_undefined_variable_raises(tmp_path: Path) -> None:

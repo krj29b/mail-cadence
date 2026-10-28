@@ -4,10 +4,9 @@ import email.policy
 import html
 import logging
 import re
-import time
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
-from email.message import EmailMessage, Message
+from email.message import EmailMessage
 from email.parser import BytesHeaderParser
 from email.utils import formatdate, make_msgid, parseaddr
 from pathlib import Path
@@ -32,10 +31,7 @@ from mail_cadence.models import (
     Outcome,
     RecipientResult,
     Settings,
-    TaskExecutionResult,
-    TaskExecutionStatus,
 )
-from mail_cadence.scheduler import TokenBucketRateLimiter
 
 logger = logging.getLogger(__name__)
 
@@ -70,10 +66,6 @@ class SMTPClient(Protocol):
     def is_connected(self) -> bool: ...
 
     async def connect(self) -> object: ...
-
-    async def send_message(
-        self, message: Message, /, *, sender: str, recipients: Sequence[str]
-    ) -> tuple[dict[str, SMTPResponse], str]: ...
 
     async def quit(self) -> object: ...
 
@@ -223,13 +215,6 @@ def build_email_message(
     return msg
 
 
-def _try_int(val: Any) -> int | None:
-    try:
-        return int(val)
-    except (ValueError, TypeError):
-        return None
-
-
 INSECURE_SMTP_AUTH_MESSAGE = (
     "SMTP_USER and SMTP_PASSWORD are set, but neither SMTP_USE_TLS nor SMTP_START_TLS is "
     "enabled, so the password would be sent unencrypted. Enable TLS or STARTTLS, or set "
@@ -345,34 +330,6 @@ class AsyncMailer:
                 await client.quit()
         client.close()
 
-    @staticmethod
-    def _extract_smtp_code(error_val: Any) -> int | None:
-        if hasattr(error_val, "code"):
-            res = _try_int(error_val.code)
-            if res is not None:
-                return res
-
-        if isinstance(error_val, tuple) and error_val:
-            res = _try_int(error_val[0])
-            if res is not None:
-                return res
-
-        if isinstance(error_val, dict):
-            code_val = error_val.get("code")
-            if code_val is None:
-                code_val = error_val.get("smtp_code")
-            if code_val is not None:
-                res = _try_int(code_val)
-                if res is not None:
-                    return res
-
-        return _try_int(error_val)
-
-    @classmethod
-    def _is_permanent_smtp_error(cls, errors: dict[str, Any]) -> bool:
-        code = cls._extract_smtp_code(errors)
-        return code is not None and SMTP_PERMANENT_ERROR_MIN <= code < SMTP_PERMANENT_ERROR_MAX
-
     def _get_smtp_connection(self) -> SMTPClient:
         if self._custom_smtp_client is not None:
             return self._custom_smtp_client
@@ -435,205 +392,6 @@ class AsyncMailer:
             yield client
         finally:
             await self._close_client(client)
-
-    @staticmethod
-    def _smtp_exception_result(
-        exc: aiosmtplib.SMTPException,
-    ) -> tuple[bool, str | None, dict[str, Any]]:
-        if isinstance(exc, aiosmtplib.SMTPRecipientsRefused):
-            # All recipients refused: report per-recipient codes so 5xx/4xx are classified
-            # the same way as on partial delivery.
-            refused: dict[str, Any] = {r.recipient: r for r in exc.recipients}
-            return False, f"All recipients refused: {list(refused.keys())}", refused
-        return False, f"SMTP Exception: {exc}", {}
-
-    async def send_single_message(
-        self,
-        msg: EmailMessage,
-        sender: str,
-        recipients: list[str],
-    ) -> tuple[bool, str | None, dict[str, Any]]:
-        if self.dry_run:
-            logger.info(
-                f"[DRY-RUN] Would send email from {sender} to {recipients} subject={msg['Subject']}"
-            )
-            return True, None, {}
-
-        try:
-            async with self._acquire_smtp_client() as client:
-                res = await client.send_message(msg, sender=sender, recipients=recipients)
-                errors = self._refused_recipients(res)
-
-                if errors:
-                    return True, f"Partial delivery errors: {list(errors.keys())}", errors
-                return True, None, {}
-        except aiosmtplib.SMTPResponseException as exc:
-            return False, f"SMTP error {exc.code}: {exc.message}", {"smtp_code": exc.code}
-        except aiosmtplib.SMTPException as exc:
-            return self._smtp_exception_result(exc)
-        except OSError as exc:  # refused/reset connections and timeouts
-            return False, f"Network/Connection error: {exc}", {}
-
-    @staticmethod
-    def _refused_recipients(send_result: object) -> dict[str, Any]:
-        """Per-recipient errors from ``send_message``'s ``(errors, message)`` result."""
-        match send_result:
-            case (dict() as errors, _):
-                return errors
-            case _:
-                return {}
-
-    def _resolve_sender(self, sender: str) -> str:
-        if sender:
-            return sender
-        return self.settings.smtp_user or ""
-
-    @classmethod
-    def _partition_partial_errors(
-        cls,
-        pending_recipients: list[str],
-        errors: dict[str, Any],
-    ) -> tuple[list[str], list[str], list[str]]:
-        failed_in_attempt = list(errors.keys())
-        succeeded = [r for r in pending_recipients if r not in failed_in_attempt]
-        perm_failed: list[str] = []
-        next_pending: list[str] = []
-        for recipient in failed_in_attempt:
-            code = cls._extract_smtp_code(errors[recipient])
-            if code is not None and SMTP_PERMANENT_ERROR_MIN <= code < SMTP_PERMANENT_ERROR_MAX:
-                perm_failed.append(recipient)
-            else:
-                next_pending.append(recipient)
-        return succeeded, perm_failed, next_pending
-
-    @classmethod
-    def _classify_attempt(
-        cls,
-        success: bool,
-        errors: dict[str, Any],
-        pending_recipients: list[str],
-    ) -> tuple[list[str], list[str], list[str]]:
-        """Split the attempted recipients into (succeeded, permanently failed, still pending)."""
-        if success and not errors:
-            return list(pending_recipients), [], []
-        if errors and "smtp_code" not in errors:
-            # Per-recipient errors (partial delivery or all recipients refused).
-            return cls._partition_partial_errors(pending_recipients, errors)
-        if cls._is_permanent_smtp_error(errors):
-            return [], list(pending_recipients), []
-        return [], [], list(pending_recipients)
-
-    async def _execute_delivery_attempts(
-        self,
-        task: MailTask,
-        msg: EmailMessage,
-        sender_addr: str,
-        all_recipients: list[str],
-        rate_limiter: TokenBucketRateLimiter | None,
-    ) -> tuple[int, list[str], list[str], str | None]:
-        attempts = 0
-        max_attempts = task.max_retries + 1
-        last_error: str | None = None
-        pending_recipients = list(all_recipients)
-        successful_recipients: list[str] = []
-        permanently_failed_recipients: list[str] = []
-
-        while attempts < max_attempts and pending_recipients:
-            attempts += 1
-            if rate_limiter:
-                await rate_limiter.acquire()
-
-            success, error_msg, errors = await self.send_single_message(
-                msg=msg,
-                sender=sender_addr,
-                recipients=pending_recipients,
-            )
-
-            last_error = error_msg
-            if not success:
-                logger.warning(
-                    f"Task {task.id} attempt {attempts}/{max_attempts} failed: {error_msg}"
-                )
-            succeeded, perm_failed, pending_recipients = self._classify_attempt(
-                success, errors, pending_recipients
-            )
-            successful_recipients.extend(succeeded)
-            permanently_failed_recipients.extend(perm_failed)
-
-            if attempts < max_attempts and pending_recipients:
-                backoff = 0.5 * (2 ** (attempts - 1))
-                await asyncio.sleep(backoff)
-
-        failed_recipients = permanently_failed_recipients + pending_recipients
-        return attempts, successful_recipients, failed_recipients, last_error
-
-    async def dispatch_task(
-        self,
-        task: MailTask,
-        rate_limiter: TokenBucketRateLimiter | None = None,
-    ) -> TaskExecutionResult:
-        start_time = time.monotonic()
-        all_recipients = task.recipients.all_recipients
-        sender_addr = self._resolve_sender(task.sender)
-
-        if not all_recipients:
-            # MailTask validation rejects this; guard against unvalidated (model_construct) tasks.
-            return TaskExecutionResult(
-                task_id=task.id,
-                status=TaskExecutionStatus.FAILED,
-                sent_count=0,
-                duration_ms=0.0,
-                error_details="No recipients defined",
-            )
-
-        try:
-            body_content = self.renderer.render_task_body(task)
-            msg = build_email_message(
-                task,
-                body_content,
-                default_sender=self.settings.smtp_user,
-            )
-        except RENDER_ERRORS as exc:
-            duration_ms = (time.monotonic() - start_time) * 1000.0
-            logger.error(f"Failed to render template for task {task.id}: {exc}")
-            return TaskExecutionResult(
-                task_id=task.id,
-                status=TaskExecutionStatus.FAILED,
-                sent_count=0,
-                failed_recipients=all_recipients,
-                duration_ms=duration_ms,
-                error_details=f"Template rendering error: {exc}",
-            )
-
-        (
-            attempts,
-            successful_recipients,
-            failed_recipients,
-            last_error,
-        ) = await self._execute_delivery_attempts(
-            task, msg, sender_addr, all_recipients, rate_limiter
-        )
-        duration_ms = (time.monotonic() - start_time) * 1000.0
-
-        sent_count = len(successful_recipients)
-        if sent_count == len(all_recipients):
-            status = TaskExecutionStatus.SUCCESS
-            last_error = None
-            failed_recipients = []
-        elif sent_count > 0:
-            status = TaskExecutionStatus.PARTIAL
-        else:
-            status = TaskExecutionStatus.FAILED
-
-        return TaskExecutionResult(
-            task_id=task.id,
-            status=status,
-            sent_count=sent_count,
-            failed_recipients=failed_recipients,
-            duration_ms=duration_ms,
-            attempt_count=attempts,
-            error_details=last_error,
-        )
 
     def render_task_message(self, task: MailTask) -> RenderedMessage:
         """Render and serialise a task message; raises one of RENDER_ERRORS on failure."""

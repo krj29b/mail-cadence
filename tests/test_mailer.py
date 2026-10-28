@@ -1,6 +1,4 @@
 from pathlib import Path
-from typing import Any
-from unittest.mock import AsyncMock
 
 import aiosmtplib
 import jinja2
@@ -14,7 +12,7 @@ from mail_cadence.mailer import (
     build_email_message,
     list_builtin_templates,
 )
-from mail_cadence.models import BodyTemplate, MailTask, Recipients, Settings, TaskExecutionStatus
+from mail_cadence.models import BodyTemplate, MailTask, Outcome, Recipients, Settings
 
 
 def test_template_renderer(tmp_path: Path) -> None:
@@ -209,481 +207,70 @@ def test_template_renderer_directory_traversal_blocked(tmp_path: Path) -> None:
         renderer.render(str(secret_file), {})
 
 
-@pytest.mark.asyncio
-async def test_async_mailer_dispatch_missing_template(tmp_path: Path) -> None:
-    settings = Settings()
-    renderer = TemplateRenderer(template_dir=tmp_path)
-    mailer = AsyncMailer(settings, renderer=renderer, dry_run=True)
-
+def test_render_task_message_raises_for_missing_template(tmp_path: Path) -> None:
+    mailer = AsyncMailer(Settings(), renderer=TemplateRenderer(template_dir=tmp_path))
     task = MailTask(
         id="TASK-MISSING-TPL",
-        max_retries=1,
         schedule_ref="SCHED-1",
         sender="sender@example.com",
         recipients=Recipients(to=["to@example.com"]),
         subject="Test Missing Template",
         body_template=BodyTemplate(template_path="missing_template.j2"),
     )
-
-    result = await mailer.dispatch_task(task)
-    assert result.status == TaskExecutionStatus.FAILED
-    assert result.sent_count == 0
-    assert "Template rendering error" in (result.error_details or "")
-    assert "missing_template.j2" in (result.error_details or "")
+    with pytest.raises(jinja2.TemplateNotFound, match=r"missing_template.j2"):
+        mailer.render_task_message(task)
 
 
-@pytest.mark.asyncio
-async def test_async_mailer_dry_run(tmp_path: Path) -> None:
-    tpl_file = tmp_path / "test.j2"
-    tpl_file.write_text("Hello there!")
-
-    settings = Settings()
-    renderer = TemplateRenderer(template_dir=tmp_path)
-    mailer = AsyncMailer(settings, renderer=renderer, dry_run=True)
-
-    task = MailTask(
-        id="TASK-01",
-        max_retries=2,
-        schedule_ref="SCHED-1",
-        sender="sender@example.com",
-        recipients=Recipients(to=["to@example.com"]),
-        subject="Test Subject",
-        body_template=BodyTemplate(template_path="test.j2"),
-    )
-
-    result = await mailer.dispatch_task(task)
-    assert result.status == TaskExecutionStatus.SUCCESS
-    assert result.sent_count == 1
-    assert result.attempt_count == 1
-    assert result.error_details is None
+MESSAGE = b"From: s@example.com\r\nSubject: x\r\n\r\nHi\r\n"
 
 
-@pytest.mark.asyncio
-async def test_async_mailer_retry_and_failure(tmp_path: Path) -> None:
-    tpl_file = tmp_path / "test.j2"
-    tpl_file.write_text("Hello there!")
+class _CountingSMTP:
+    """Accepts every command and counts connections and QUITs."""
 
-    settings = Settings()
-    renderer = TemplateRenderer(template_dir=tmp_path)
+    def __init__(self) -> None:
+        self.is_connected = False
+        self.connect_calls = 0
+        self.quit_calls = 0
+        self.data_calls = 0
 
-    mock_smtp = AsyncMock()
-    mock_smtp.is_connected = True
-    mock_smtp.connect = AsyncMock()
-    smtp_exc = aiosmtplib.SMTPResponseException(451, "Temporary failure")
-    mock_smtp.send_message = AsyncMock(side_effect=smtp_exc)
+    async def connect(self) -> None:
+        self.connect_calls += 1
+        self.is_connected = True
 
-    mailer = AsyncMailer(settings, renderer=renderer, dry_run=False, smtp_client=mock_smtp)
+    async def mail(self, sender: str, /) -> aiosmtplib.SMTPResponse:
+        return aiosmtplib.SMTPResponse(250, "OK")
 
-    task = MailTask(
-        id="TASK-02",
-        max_retries=2,  # total 3 attempts
-        schedule_ref="SCHED-1",
-        sender="sender@example.com",
-        recipients=Recipients(to=["to@example.com"]),
-        subject="Test Subject",
-        body_template=BodyTemplate(template_path="test.j2"),
-    )
+    async def rcpt(self, recipient: str, /) -> aiosmtplib.SMTPResponse:
+        return aiosmtplib.SMTPResponse(250, "OK")
 
-    result = await mailer.dispatch_task(task)
-    assert result.status == TaskExecutionStatus.FAILED
-    assert result.sent_count == 0
-    assert result.attempt_count == 3
-    assert "SMTP error 451" in (result.error_details or "")
+    async def data(self, message: bytes, /) -> aiosmtplib.SMTPResponse:
+        self.data_calls += 1
+        return aiosmtplib.SMTPResponse(250, "Queued")
+
+    async def rset(self) -> aiosmtplib.SMTPResponse:
+        return aiosmtplib.SMTPResponse(250, "OK")
+
+    async def quit(self) -> None:
+        self.quit_calls += 1
+        self.is_connected = False
+
+    def close(self) -> None:
+        self.is_connected = False
 
 
 @pytest.mark.asyncio
-async def test_dispatch_task_failure_with_rate_limiter_and_network_exception(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+async def test_async_mailer_context_manager_reuses_one_connection(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    tpl_file = tmp_path / "test.j2"
-    tpl_file.write_text("Hello there!")
-
-    settings = Settings()
-    renderer = TemplateRenderer(template_dir=tmp_path)
-
-    mock_smtp = AsyncMock()
-    mock_smtp.is_connected = False
-    mock_smtp.connect = AsyncMock(side_effect=ConnectionRefusedError("Connection refused by host"))
-
-    mock_rate_limiter = AsyncMock()
-    mock_sleep = AsyncMock()
-    monkeypatch.setattr("asyncio.sleep", mock_sleep)
-
-    mailer = AsyncMailer(settings, renderer=renderer, dry_run=False, smtp_client=mock_smtp)
-
-    task = MailTask(
-        id="TASK-NET-ERR",
-        max_retries=2,  # 3 attempts total
-        schedule_ref="SCHED-1",
-        sender="sender@example.com",
-        recipients=Recipients(to=["to@example.com", "cc@example.com"]),
-        subject="Test Network Error",
-        body_template=BodyTemplate(template_path="test.j2"),
-    )
-
-    result = await mailer.dispatch_task(task, rate_limiter=mock_rate_limiter)
-
-    assert result.status == TaskExecutionStatus.FAILED
-    assert result.sent_count == 0
-    assert result.failed_recipients == ["to@example.com", "cc@example.com"]
-    assert result.attempt_count == 3
-    assert result.error_details is not None
-    assert "Network/Connection error: Connection refused by host" in result.error_details
-
-    # Verify rate limiter was acquired on each attempt
-    assert mock_rate_limiter.acquire.call_count == 3
-
-    # Verify exponential backoff sleep was called for attempts 1 and 2 (0.5s and 1.0s)
-    assert mock_sleep.call_count == 2
-    mock_sleep.assert_any_call(0.5)
-    mock_sleep.assert_any_call(1.0)
-
-
-@pytest.mark.asyncio
-async def test_dispatch_task_retry_success_with_rate_limiter(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    tpl_file = tmp_path / "test.j2"
-    tpl_file.write_text("Hello there!")
-
-    settings = Settings()
-    renderer = TemplateRenderer(template_dir=tmp_path)
-
-    mock_smtp = AsyncMock()
-    mock_smtp.is_connected = True
-    mock_smtp.send_message = AsyncMock(
-        side_effect=[
-            aiosmtplib.SMTPException("Temporary network disconnect"),
-            None,  # Success on second attempt
-        ]
-    )
-
-    mock_rate_limiter = AsyncMock()
-    mock_sleep = AsyncMock()
-    monkeypatch.setattr("asyncio.sleep", mock_sleep)
-
-    mailer = AsyncMailer(settings, renderer=renderer, dry_run=False, smtp_client=mock_smtp)
-
-    task = MailTask(
-        id="TASK-RETRY-SUCCESS",
-        max_retries=2,
-        schedule_ref="SCHED-1",
-        sender="sender@example.com",
-        recipients=Recipients(to=["to@example.com"]),
-        subject="Test Retry Success",
-        body_template=BodyTemplate(template_path="test.j2"),
-    )
-
-    result = await mailer.dispatch_task(task, rate_limiter=mock_rate_limiter)
-
-    assert result.status == TaskExecutionStatus.SUCCESS
-    assert result.sent_count == 1
-    assert result.failed_recipients == []
-    assert result.attempt_count == 2
-    assert result.error_details is None
-
-    assert mock_rate_limiter.acquire.call_count == 2
-    assert mock_sleep.call_count == 1
-    mock_sleep.assert_called_once_with(0.5)
-
-
-@pytest.mark.asyncio
-async def test_async_mailer_partial_delivery(tmp_path: Path) -> None:
-    tpl_file = tmp_path / "test.j2"
-    tpl_file.write_text("Hello there!")
-
-    settings = Settings()
-    renderer = TemplateRenderer(template_dir=tmp_path)
-
-    mock_smtp = AsyncMock()
-    mock_smtp.is_connected = True
-
-    errors_dict = {"user2@example.com": (450, "Mailbox busy")}
-    mock_smtp.send_message = AsyncMock(return_value=(errors_dict, "250 OK"))
-
-    mailer = AsyncMailer(settings, renderer=renderer, dry_run=False, smtp_client=mock_smtp)
-
-    task = MailTask(
-        id="TASK-PARTIAL",
-        max_retries=1,
-        schedule_ref="SCHED-1",
-        sender="sender@example.com",
-        recipients=Recipients(to=["user1@example.com", "user2@example.com"]),
-        subject="Test Partial",
-        body_template=BodyTemplate(template_path="test.j2"),
-    )
-
-    result = await mailer.dispatch_task(task)
-
-    assert result.status == TaskExecutionStatus.PARTIAL
-    assert result.sent_count == 1
-    assert result.failed_recipients == ["user2@example.com"]
-    assert result.attempt_count == 2
-    assert "user2@example.com" in (result.error_details or "")
-
-    assert mock_smtp.send_message.call_count == 2
-    second_call_recipients = mock_smtp.send_message.call_args_list[1].kwargs["recipients"]
-    assert second_call_recipients == ["user2@example.com"]
-
-
-@pytest.mark.asyncio
-async def test_partial_delivery_permanent_5xx_no_retry(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    tpl_file = tmp_path / "test.j2"
-    tpl_file.write_text("Hello there!")
-
-    settings = Settings()
-    renderer = TemplateRenderer(template_dir=tmp_path)
-
-    mock_smtp = AsyncMock()
-    mock_smtp.is_connected = True
-
-    mock_sleep = AsyncMock()
-    monkeypatch.setattr("asyncio.sleep", mock_sleep)
-
-    first_attempt_errors = {
-        "temp_fail_450@example.com": (450, "Temporary failure"),
-        "perm_fail_550@example.com": (550, "User unknown"),
-    }
-    second_attempt_errors: dict[str, Any] = {}
-
-    mock_smtp.send_message = AsyncMock(
-        side_effect=[
-            (first_attempt_errors, "250 OK"),
-            (second_attempt_errors, "250 OK"),
-        ]
-    )
-
-    mailer = AsyncMailer(settings, renderer=renderer, dry_run=False, smtp_client=mock_smtp)
-
-    task = MailTask(
-        id="TASK-PARTIAL-550-NO-RETRY",
-        max_retries=2,
-        schedule_ref="SCHED-1",
-        sender="sender@example.com",
-        recipients=Recipients(
-            to=["ok@example.com", "temp_fail_450@example.com", "perm_fail_550@example.com"]
-        ),
-        subject="Test Partial Permanent 5xx",
-        body_template=BodyTemplate(template_path="test.j2"),
-    )
-
-    result = await mailer.dispatch_task(task)
-
-    assert result.status == TaskExecutionStatus.PARTIAL
-    assert result.sent_count == 2
-    assert result.failed_recipients == ["perm_fail_550@example.com"]
-    assert result.attempt_count == 2
-
-    assert mock_smtp.send_message.call_count == 2
-    second_call_recipients = mock_smtp.send_message.call_args_list[1].kwargs["recipients"]
-    assert second_call_recipients == ["temp_fail_450@example.com"]
-
-
-@pytest.mark.asyncio
-async def test_permanent_5xx_smtp_error_no_retry(tmp_path: Path) -> None:
-    tpl_file = tmp_path / "test.j2"
-    tpl_file.write_text("Hello there!")
-
-    settings = Settings()
-    renderer = TemplateRenderer(template_dir=tmp_path)
-
-    mock_smtp = AsyncMock()
-    mock_smtp.is_connected = True
-    smtp_exc = aiosmtplib.SMTPResponseException(550, "User unknown")
-    mock_smtp.send_message = AsyncMock(side_effect=smtp_exc)
-
-    mailer = AsyncMailer(settings, renderer=renderer, dry_run=False, smtp_client=mock_smtp)
-
-    task = MailTask(
-        id="TASK-PERM-550",
-        max_retries=3,
-        schedule_ref="SCHED-1",
-        sender="sender@example.com",
-        recipients=Recipients(to=["unknown@example.com"]),
-        subject="Test Permanent Error",
-        body_template=BodyTemplate(template_path="test.j2"),
-    )
-
-    result = await mailer.dispatch_task(task)
-    assert result.status == TaskExecutionStatus.FAILED
-    assert result.sent_count == 0
-    assert result.attempt_count == 1
-    assert "SMTP error 550" in (result.error_details or "")
-
-
-@pytest.mark.asyncio
-async def test_transient_4xx_smtp_error_retries_fully(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    tpl_file = tmp_path / "test.j2"
-    tpl_file.write_text("Hello there!")
-
-    settings = Settings()
-    renderer = TemplateRenderer(template_dir=tmp_path)
-
-    mock_smtp = AsyncMock()
-    mock_smtp.is_connected = True
-    smtp_exc = aiosmtplib.SMTPResponseException(421, "Service not available")
-    mock_smtp.send_message = AsyncMock(side_effect=smtp_exc)
-
-    mock_sleep = AsyncMock()
-    monkeypatch.setattr("asyncio.sleep", mock_sleep)
-
-    mailer = AsyncMailer(settings, renderer=renderer, dry_run=False, smtp_client=mock_smtp)
-
-    task = MailTask(
-        id="TASK-TRANSIENT-421",
-        max_retries=3,
-        schedule_ref="SCHED-1",
-        sender="sender@example.com",
-        recipients=Recipients(to=["user@example.com"]),
-        subject="Test Transient Error",
-        body_template=BodyTemplate(template_path="test.j2"),
-    )
-
-    result = await mailer.dispatch_task(task)
-    assert result.status == TaskExecutionStatus.FAILED
-    assert result.sent_count == 0
-    assert result.attempt_count == 4
-    assert "SMTP error 421" in (result.error_details or "")
-
-
-@pytest.mark.asyncio
-async def test_async_mailer_context_manager_reuse(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    tpl_file = tmp_path / "test.j2"
-    tpl_file.write_text("Hello there!")
-
-    settings = Settings()
-    renderer = TemplateRenderer(template_dir=tmp_path)
-
-    # Mock aiosmtplib.SMTP class
-    class FakeSMTP:
-        def __init__(self, *args: list[Any], **kwargs: dict[str, Any]) -> None:
-            self.is_connected = False
-            self.connect_calls = 0
-            self.quit_calls = 0
-            self.send_calls = 0
-
-        async def connect(self) -> None:
-            pass
-
-        async def login(self, u: str, p: str) -> None:
-            pass
-
-        async def send_message(
-            self, msg: Any, sender: str, recipients: list[str]
-        ) -> tuple[dict[str, Any], str]:
-            self.send_calls += 1
-            return ({}, "OK")
-
-        async def quit(self) -> None:
-            self.quit_calls += 1
-            self.is_connected = False
-
-        def close(self) -> None:
-            self.is_connected = False
-
-    fake_client = FakeSMTP()
-
-    async def mock_connect() -> None:
-        fake_client.connect_calls += 1
-        fake_client.is_connected = True
-
-    fake_client.connect = mock_connect  # type: ignore
-
-    monkeypatch.setattr("aiosmtplib.SMTP", lambda *a, **kw: fake_client)
-
-    mailer = AsyncMailer(settings, renderer=renderer, dry_run=False)
-
-    task = MailTask(
-        id="TASK-CTX",
-        max_retries=0,
-        schedule_ref="SCHED-1",
-        sender="sender@example.com",
-        recipients=Recipients(to=["user@example.com"]),
-        subject="Test CTX",
-        body_template=BodyTemplate(template_path="test.j2"),
-    )
+    client = _CountingSMTP()
+    monkeypatch.setattr("aiosmtplib.SMTP", lambda *a, **kw: client)
+    mailer = AsyncMailer(Settings())
 
     async with mailer:
         for _ in range(5):
-            res = await mailer.dispatch_task(task)
-            assert res.status == TaskExecutionStatus.SUCCESS
+            results = await mailer.deliver(MESSAGE, ["u@example.com"])
+            assert results["u@example.com"].outcome == Outcome.ACCEPTED
 
-    # Connect should have been called only once, quit only once at exit
-    assert fake_client.connect_calls == 1
-    assert fake_client.send_calls == 5
-    assert fake_client.quit_calls == 1
-
-
-@pytest.mark.asyncio
-async def test_async_mailer_context_manager_reconnect_on_disconnect(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    tpl_file = tmp_path / "test.j2"
-    tpl_file.write_text("Hello there!")
-
-    settings = Settings()
-    renderer = TemplateRenderer(template_dir=tmp_path)
-
-    clients = []
-
-    class FakeSMTP:
-        def __init__(self, *args: list[Any], **kwargs: dict[str, Any]) -> None:
-            self.is_connected = False
-            self.connect_calls = 0
-            self.quit_calls = 0
-            self.send_calls = 0
-            clients.append(self)
-
-        async def connect(self) -> None:
-            self.connect_calls += 1
-            self.is_connected = True
-
-        async def login(self, u: str, p: str) -> None:
-            pass
-
-        async def send_message(
-            self, msg: Any, sender: str, recipients: list[str]
-        ) -> tuple[dict[str, Any], str]:
-            self.send_calls += 1
-            if self.send_calls == 1 and len(clients) == 1:
-                # Disconnect on first send attempt on client 1
-                self.is_connected = False
-                raise aiosmtplib.SMTPServerDisconnected("Disconnected")
-            return ({}, "OK")
-
-        async def quit(self) -> None:
-            self.quit_calls += 1
-            self.is_connected = False
-
-        def close(self) -> None:
-            self.is_connected = False
-
-    monkeypatch.setattr("aiosmtplib.SMTP", FakeSMTP)
-
-    mailer = AsyncMailer(settings, renderer=renderer, dry_run=False)
-
-    task = MailTask(
-        id="TASK-DISCONNECT",
-        max_retries=1,  # Allows retry
-        schedule_ref="SCHED-1",
-        sender="sender@example.com",
-        recipients=Recipients(to=["user@example.com"]),
-        subject="Test Disconnect",
-        body_template=BodyTemplate(template_path="test.j2"),
-    )
-
-    async with mailer:
-        res = await mailer.dispatch_task(task)
-        assert res.status == TaskExecutionStatus.SUCCESS
-
-    # Two clients created: first failed due to disconnect, second succeeded on retry
-    assert len(clients) == 2
-    assert clients[0].connect_calls == 1
-    assert clients[1].connect_calls == 1
-    assert clients[1].send_calls == 1
+    assert client.connect_calls == 1
+    assert client.data_calls == 5
+    assert client.quit_calls == 1, "the pooled connection is closed on exit"

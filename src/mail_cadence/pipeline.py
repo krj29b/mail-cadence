@@ -70,7 +70,6 @@ EXIT_REPORT_FAILED = 4
 HEARTBEAT_SECONDS = 60.0
 
 WindowControls = tuple[TokenBucketRateLimiter, asyncio.Semaphore]
-SimulatedTask = tuple[MailTask, TokenBucketRateLimiter, asyncio.Semaphore]
 
 # Execution state -> status reported for the task (ADR 0001, D9/D11).
 _STATE_STATUS: dict[str, TaskExecutionStatus] = {
@@ -168,7 +167,7 @@ async def run_dispatch(options: DispatchOptions, settings: Settings) -> int:
         renderer = TemplateRenderer(template_dir=options.template_dir)
         mailer = AsyncMailer(settings=settings, renderer=renderer, dry_run=options.dry_run)
         if options.dry_run:
-            code = await _simulate(repo, mailer, loaded, options, start_time)
+            code = _simulate(repo, mailer, loaded, options, start_time)
         else:
             code = await _dispatch(repo, mailer, loaded, options, start_time)
 
@@ -564,38 +563,48 @@ async def _manual_result(
 # --- Dry run ---------------------------------------------------------------------------
 
 
-async def _simulate(
+def _simulate(
     repo: DatabaseRepository,
     mailer: AsyncMailer,
     loaded: _LoadedConfig,
     options: DispatchOptions,
     start_time: datetime,
 ) -> int:
-    """Render and log what would be sent; read execution state, never write it (D13)."""
+    """Render and log what would be sent; read execution state, never write it (D13).
+
+    Messages are rendered exactly as a real run stores them; nothing connects to SMTP
+    and no rate limit is waited for.
+    """
     batch_id = str(uuid.uuid4())
     scheduled, results = _plan_simulation(repo, loaded, options.ref_dt, batch_id)
     logger.info(f"Simulating {len(scheduled)} tasks ({len(results)} skipped).")
-    async with mailer:
-        results.extend(await _simulate_tasks(mailer, scheduled, repo, batch_id, options.ref_dt))
-        report = aggregate_summary_report(results, start_time, datetime.now(UTC))
-        report_ok = await _send_report_if_needed(
-            report, loaded.mail_config, repo.has_report_settings(), mailer
+    for task in sorted(scheduled, key=lambda t: (PRIORITY_ORDER[t.priority], t.id)):
+        result = _simulate_task(mailer, task)
+        repo.log_task_execution(result, batch_id=batch_id, dry_run=True, executed_at=options.ref_dt)
+        results.append(result)
+    report = aggregate_summary_report(results, start_time, datetime.now(UTC))
+    if _report_due(report, repo.has_report_settings()):
+        settings = loaded.mail_config.report_settings
+        rendered = ReportGenerator().render_report_message(
+            report, settings, mailer.settings.smtp_user
         )
-    return _exit_code([r.status for r in results], report_ok=report_ok)
+        logger.info(
+            f"[DRY-RUN] Would send status report {rendered.message_id} to {settings.recipient}"
+        )
+    return _exit_code([r.status for r in results], report_ok=True)
 
 
 def _plan_simulation(
     repo: DatabaseRepository, loaded: _LoadedConfig, ref_dt: datetime | None, batch_id: str
-) -> tuple[list[SimulatedTask], list[TaskExecutionResult]]:
+) -> tuple[list[MailTask], list[TaskExecutionResult]]:
     scheduler = TaskScheduler(loaded.work_schedules)
-    controls: dict[str, WindowControls] = {}
-    scheduled: list[SimulatedTask] = []
+    scheduled: list[MailTask] = []
     skipped: list[TaskExecutionResult] = []
     for task in loaded.mail_config.tasks:
         instance = scheduler.window_instance(task.schedule_ref, ref_dt)
         preview = repo.peek_claim(task.id, instance.key) if instance else None
         if instance is not None and preview is not None and preview.status == ClaimStatus.CLAIMED:
-            scheduled.append((task, *_window_controls(controls, instance)))
+            scheduled.append(task)
             continue
         if instance is None or preview is None:
             reason, status = _inactive_reason(scheduler, task), TaskExecutionStatus.SKIPPED_SCHEDULE
@@ -616,28 +625,28 @@ def _simulated_skip(preview: ClaimResult) -> tuple[str, TaskExecutionStatus]:
     return "already executed in this window", TaskExecutionStatus.SKIPPED_SCHEDULE
 
 
-async def _simulate_tasks(
-    mailer: AsyncMailer,
-    scheduled: list[SimulatedTask],
-    repo: DatabaseRepository,
-    batch_id: str,
-    ref_dt: datetime | None,
-) -> list[TaskExecutionResult]:
-    async def simulate(
-        task: MailTask, rate_limiter: TokenBucketRateLimiter, sem: asyncio.Semaphore
-    ) -> TaskExecutionResult:
-        async with sem:
-            logger.info(f"Simulating task {task.id}...")
-            result = await mailer.dispatch_task(task, rate_limiter=rate_limiter)
-            repo.log_task_execution(result, batch_id=batch_id, dry_run=True, executed_at=ref_dt)
-            return result
-
-    if not scheduled:
-        return []
-    ordered = sorted(scheduled, key=lambda item: (PRIORITY_ORDER[item[0].priority], item[0].id))
-    async with asyncio.TaskGroup() as tg:
-        running = [tg.create_task(simulate(*item)) for item in ordered]
-    return [t.result() for t in running]
+def _simulate_task(mailer: AsyncMailer, task: MailTask) -> TaskExecutionResult:
+    """Render the message a real run would store; a rendering error fails the task."""
+    started = time.monotonic()
+    recipients = task.recipients.all_recipients
+    try:
+        rendered = mailer.render_task_message(task)
+    except RENDER_ERRORS as exc:
+        logger.error(f"Failed to render template for task {task.id}: {exc}")
+        return TaskExecutionResult(
+            task_id=task.id,
+            status=TaskExecutionStatus.FAILED,
+            failed_recipients=recipients,
+            duration_ms=(time.monotonic() - started) * 1000.0,
+            error_details=f"Template rendering error: {exc}",
+        )
+    logger.info(f"[DRY-RUN] Would send task {task.id} ({rendered.message_id}) to {recipients}")
+    return TaskExecutionResult(
+        task_id=task.id,
+        status=TaskExecutionStatus.SUCCESS,
+        sent_count=len(recipients),
+        duration_ms=(time.monotonic() - started) * 1000.0,
+    )
 
 
 # --- Shared ----------------------------------------------------------------------------
@@ -678,18 +687,6 @@ def _report_due(report: BatchSummaryReport, has_report_settings: bool) -> bool:
         logger.warning("Report settings are not configured; status report not sent.")
         return False
     return True
-
-
-async def _send_report_if_needed(
-    report: BatchSummaryReport,
-    mail_config: MailConfiguration,
-    has_report_settings: bool,
-    mailer: AsyncMailer,
-) -> bool:
-    """Dry runs: log the report that would be sent; False only if that failed."""
-    if not _report_due(report, has_report_settings):
-        return True
-    return await ReportGenerator().send_report(report, mail_config.report_settings, mailer)
 
 
 async def _send_new_report(

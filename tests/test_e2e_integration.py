@@ -3,7 +3,7 @@ from collections.abc import Sequence
 from contextlib import closing
 from datetime import datetime
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -66,11 +66,7 @@ async def test_run_dispatch_pipeline_idempotency_two_runs(tmp_path: Path) -> Non
         ).fetchone()
         return row["status"], row["error_details"]
 
-    fake_smtp = AsyncMock(return_value=(True, None, {}))  # the status report
-    with (
-        patch("mail_cadence.mailer.AsyncMailer.send_single_message", fake_smtp),
-        patch.object(AsyncMailer, "deliver", _accept_all),
-    ):
+    with patch.object(AsyncMailer, "deliver", _accept_all):
         # 1. Dry-run: TASK-001 (in its window) is simulated but its state stays untouched.
         assert await run(dry_run=True) == 0
         with closing(get_connection(db_file)) as conn:

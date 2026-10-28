@@ -2,10 +2,11 @@
 and the report subject prefix header check."""
 
 import sqlite3
+from collections.abc import Awaitable, Callable, Sequence
 from contextlib import closing
 from datetime import datetime
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -14,7 +15,14 @@ from pydantic import ValidationError
 
 from mail_cadence.database import MIGRATIONS, get_connection, init_db
 from mail_cadence.dispatch_jobs import DispatchJob
-from mail_cadence.models import ReportSettings, Settings, TaskExecutionResult, TaskExecutionStatus
+from mail_cadence.mailer import AsyncMailer
+from mail_cadence.models import (
+    Outcome,
+    RecipientResult,
+    ReportSettings,
+    Settings,
+    TaskExecutionStatus,
+)
 from mail_cadence.pipeline import (
     EXIT_OK,
     EXIT_REPORT_FAILED,
@@ -30,6 +38,10 @@ TZ = ZoneInfo("Europe/Warsaw")
 # The sample morning schedule (06:00-12:00) is active at 08:00 and inactive at 03:00.
 MORNING = datetime(2026, 10, 17, 8, 0, tzinfo=TZ)
 NIGHT = datetime(2026, 10, 17, 3, 0, tzinfo=TZ)
+# Recipients of the sample TASK-001 (morning) and of the status report.
+CLIENT = "client.alpha@example.com"
+TASK_001 = (CLIENT, "client.beta@example.com", "account.manager@example.com")
+REPORT = "ops-alerts@example.com"
 
 
 def _options(db_path: Path, *, dry_run: bool = True, ref_dt: datetime = MORNING) -> DispatchOptions:
@@ -42,12 +54,20 @@ def _options(db_path: Path, *, dry_run: bool = True, ref_dt: datetime = MORNING)
     )
 
 
-def _result_mock(status: TaskExecutionStatus) -> AsyncMock:
-    return AsyncMock(
-        side_effect=lambda task, rate_limiter=None: TaskExecutionResult(
-            task_id=task.id, status=status, sent_count=1
-        )
-    )
+def _refusing(*refused: str) -> Callable[..., Awaitable[dict[str, RecipientResult]]]:
+    """Stands in for AsyncMailer.deliver: 550 for ``refused``, 250 for everyone else."""
+
+    async def deliver(
+        _mailer: AsyncMailer, _data: bytes, recipients: Sequence[str]
+    ) -> dict[str, RecipientResult]:
+        return {
+            r: RecipientResult(Outcome.PERMANENT, 550)
+            if r in refused
+            else RecipientResult(Outcome.ACCEPTED, 250)
+            for r in recipients
+        }
+
+    return deliver
 
 
 # --- Dry-run skips --------------------------------------------------------------------
@@ -83,59 +103,20 @@ async def test_real_run_skips_still_count_as_real(tmp_path: Path) -> None:
 # --- Exit codes -----------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    ("refused", "expected"),
+    [
+        pytest.param((), EXIT_OK, id="all-accepted"),
+        pytest.param((CLIENT,), EXIT_TASK_FAILED, id="partial-delivery"),
+        pytest.param((REPORT,), EXIT_REPORT_FAILED, id="report-refused"),
+        pytest.param((*TASK_001, REPORT), EXIT_TASK_FAILED, id="task-failure-wins"),
+    ],
+)
 @pytest.mark.asyncio
-async def test_partial_delivery_returns_task_failed(tmp_path: Path) -> None:
-    with patch(
-        "mail_cadence.pipeline.AsyncMailer.dispatch_task",
-        _result_mock(TaskExecutionStatus.PARTIAL),
-    ):
-        code = await run_dispatch(_options(tmp_path / "partial.db"), Settings())
-    assert code == EXIT_TASK_FAILED
-
-
-@pytest.mark.asyncio
-async def test_report_failure_after_successful_tasks_returns_report_failed(
-    tmp_path: Path,
-) -> None:
-    send_report = AsyncMock(return_value=False)
-    with (
-        patch(
-            "mail_cadence.pipeline.AsyncMailer.dispatch_task",
-            _result_mock(TaskExecutionStatus.SUCCESS),
-        ),
-        patch("mail_cadence.pipeline.ReportGenerator.send_report", send_report),
-    ):
-        code = await run_dispatch(_options(tmp_path / "report.db"), Settings())
-    send_report.assert_awaited_once()
-    assert code == EXIT_REPORT_FAILED
-
-
-@pytest.mark.asyncio
-async def test_task_failure_takes_precedence_over_report_failure(tmp_path: Path) -> None:
-    with (
-        patch(
-            "mail_cadence.pipeline.AsyncMailer.dispatch_task",
-            _result_mock(TaskExecutionStatus.FAILED),
-        ),
-        patch("mail_cadence.pipeline.ReportGenerator.send_report", AsyncMock(return_value=False)),
-    ):
-        code = await run_dispatch(_options(tmp_path / "both.db"), Settings())
-    assert code == EXIT_TASK_FAILED
-
-
-@pytest.mark.asyncio
-async def test_successful_tasks_and_report_return_ok(tmp_path: Path) -> None:
-    send_report = AsyncMock(return_value=True)
-    with (
-        patch(
-            "mail_cadence.pipeline.AsyncMailer.dispatch_task",
-            _result_mock(TaskExecutionStatus.SUCCESS),
-        ),
-        patch("mail_cadence.pipeline.ReportGenerator.send_report", send_report),
-    ):
-        code = await run_dispatch(_options(tmp_path / "ok.db"), Settings())
-    send_report.assert_awaited_once()
-    assert code == EXIT_OK
+async def test_exit_code(tmp_path: Path, refused: tuple[str, ...], expected: int) -> None:
+    with patch.object(AsyncMailer, "deliver", _refusing(*refused)):
+        code = await run_dispatch(_options(tmp_path / "exit.db", dry_run=False), Settings())
+    assert code == expected
 
 
 def test_web_status_explains_report_failure(tmp_path: Path) -> None:
