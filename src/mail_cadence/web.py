@@ -22,7 +22,17 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from pydantic import ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictFloat,
+    StrictInt,
+    StrictStr,
+    TypeAdapter,
+    ValidationError,
+)
 
 from mail_cadence import __version__
 from mail_cadence.database import get_connection, init_db
@@ -450,33 +460,60 @@ def parse_email_list(raw_input: str) -> list[str]:
     return [item for item in items if item]
 
 
+# Shapes accepted from the JSON form fields. The whole structure is checked before
+# anything is built or saved, so a malformed field is a 400 and changes nothing.
+_ScalarValue = StrictStr | StrictInt | StrictFloat | StrictBool
+
+
+class _ContextVarInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: StrictStr = Field(min_length=1)
+    value: _ScalarValue
+
+
+class _HourWindowInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    start: StrictStr
+    end: StrictStr
+    days_of_week: StrictStr = "*"
+    max_concurrency: StrictInt = 1
+    rate_limit_per_min: StrictInt = 60
+
+
+_CONTEXT_VARS = TypeAdapter(list[_ContextVarInput] | dict[StrictStr, _ScalarValue])
+_HOUR_WINDOWS = TypeAdapter(list[_HourWindowInput])
+
+
+def _validate_json_field[T](field: str, raw_json: str, adapter: TypeAdapter[T]) -> T:
+    """Parse ``raw_json`` and check it against ``adapter``; ValueError names the field."""
+    try:
+        return adapter.validate_json(raw_json)
+    except ValidationError as exc:
+        problems = "; ".join(
+            f"{'.'.join(str(p) for p in err['loc']) or 'value'}: {err['msg']}"
+            for err in exc.errors(include_url=False)
+        )
+        raise ValueError(f"Invalid {field}: {problems}") from None
+
+
 def parse_context_vars(raw_json: str) -> list[ContextVar]:
+    """``[{"name": ..., "value": ...}]`` or ``{"name": value}``; values are scalars."""
     if not raw_json or not raw_json.strip():
         return []
-    data = json.loads(raw_json)
-    if isinstance(data, list):
-        return [ContextVar(name=item["name"], value=str(item["value"])) for item in data]
+    data = _validate_json_field("context_variables", raw_json, _CONTEXT_VARS)
     if isinstance(data, dict):
         return [ContextVar(name=k, value=str(v)) for k, v in data.items()]
-    return []
+    return [ContextVar(name=item.name, value=str(item.value)) for item in data]
 
 
 def parse_hour_windows(raw_json: str) -> list[HourWindow]:
+    """A JSON list of hour windows; any other shape is refused."""
     if not raw_json or not raw_json.strip():
         return []
-    data = json.loads(raw_json)
-    if isinstance(data, list):
-        return [
-            HourWindow(
-                start=item["start"],
-                end=item["end"],
-                days_of_week=item.get("days_of_week", "*"),
-                max_concurrency=int(item.get("max_concurrency", 1)),
-                rate_limit_per_min=int(item.get("rate_limit_per_min", 60)),
-            )
-            for item in data
-        ]
-    return []
+    items = _validate_json_field("allowed_hours_json", raw_json, _HOUR_WINDOWS)
+    return [HourWindow(**item.model_dump()) for item in items]
 
 
 @router.get("/", response_class=HTMLResponse)

@@ -225,6 +225,8 @@ Data structures map directly between XML elements, Pydantic objects, and SQLite 
 | Addresses (`Sender`, `To`, `Cc`, `Bcc`, report `Recipient`/`Sender`) | Exactly one address per entry, bare (`a@example.com`) or with a display name (`Ann <a@example.com>`). An empty task `Sender` falls back to `SMTP_USER`. |
 | `MailTask.schedule_ref` | Must reference an existing schedule: XML import fails cross-reference validation, the panel returns `400`. |
 | `HourWindow.end` | `HH:MM[:SS]` or `24:00`. A window `00:00`-`23:59` leaves the last minute of the day uncovered; use `24:00`. |
+| Panel field `allowed_hours_json` | A JSON list of objects with `start` and `end` (strings) and optional `days_of_week` (string), `max_concurrency` and `rate_limit_per_min` (integers). Any other shape, unknown key, `null` or wrong type is a `400` and the schedule is not changed. |
+| Panel field `context_variables` | A JSON list of `{"name": ..., "value": ...}` or an object `{"name": value}`; names are non-empty strings, values are strings, numbers or booleans (stored as text). Anything else is a `400` and the task is not changed. |
 
 Migration `2` normalizes rows written by older versions: unknown priorities become `normal`, and `max_retries` is clamped to `0..10` (see Schema Versioning).
 
