@@ -22,11 +22,17 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 RACE_TESTS = (
     "tests/test_delivery_guarantees.py::test_t01_concurrent_processes_send_once",
+    "tests/test_delivery_guarantees.py::test_t02_cli_and_two_panels_send_once",
     "tests/test_delivery_guarantees.py::test_t03_restart_never_resends_to_accepted_recipient",
     "tests/test_delivery_guarantees.py::test_t06_old_version_result_does_not_complete_edited_task",
     "tests/test_delivery_guarantees.py::test_t08_recreated_task_is_a_new_identity",
+    "tests/test_delivery_guarantees.py::test_t18_configuration_can_be_saved_while_smtp_is_in_progress",
     "tests/test_execution_store.py::test_concurrent_processes_claim_each_task_once",
     "tests/test_failure_matrix.py",
+    "tests/test_mailer_attempts.py::test_timeout_after_the_body_is_unknown",
+    "tests/test_mailer_attempts.py::test_session_with_a_late_reply_is_not_reused",
+    "tests/test_dispatch_jobs.py::test_only_one_of_many_concurrent_starts_wins",
+    "tests/test_web.py::test_web_dispatch_lock_conflict",
 )
 _FAILED_RE = re.compile(r"^(?:FAILED|ERROR) (\S+)", re.MULTILINE)
 OUTPUT_TAIL_LINES = 80
