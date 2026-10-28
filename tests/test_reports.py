@@ -119,6 +119,36 @@ def test_failed_report_is_retried_from_the_same_bytes(tmp_path: Path, sink: SMTP
     assert b"[R] Task Execution Summary" in report
 
 
+def _delete_task(db_path: Path) -> None:
+    with closing(get_connection(db_path)) as conn:
+        DatabaseRepository(conn).delete_mail_task("T1")
+
+
+def test_pending_report_is_retried_when_no_task_is_left(tmp_path: Path, sink: SMTPSink) -> None:
+    """Audit A5: deleting the last task after a failed report must not strand it."""
+    db_path = _prepare(tmp_path)
+    sink.rcpt_codes[REPORT_TO] = 450
+    assert _run(db_path, sink.port) == EXIT_REPORT_FAILED
+    _delete_task(db_path)
+
+    assert _run(db_path, sink.port) == EXIT_REPORT_FAILED, "still refused: attempt 2"
+    sink.rcpt_codes.clear()
+    assert _run(db_path, sink.port) == EXIT_OK
+
+    assert _reports(db_path) == [("ACCEPTED", 3)]
+    assert len(_report_deliveries(sink)) == 1
+    assert sink.accepted_count(A) == 1, "no task message without a task"
+
+
+def test_run_without_tasks_or_reports_opens_no_smtp_session(tmp_path: Path, sink: SMTPSink) -> None:
+    db_path = _prepare(tmp_path)
+    _delete_task(db_path)
+    assert _run(db_path, sink.port) == EXIT_OK
+    assert _run(db_path, sink.port, dry_run=True) == EXIT_OK
+    assert sink.commands == []
+    assert _reports(db_path) == []
+
+
 def test_report_budget_ends_after_three_attempts(tmp_path: Path, sink: SMTPSink) -> None:
     db_path = _prepare(tmp_path)
     sink.rcpt_codes[REPORT_TO] = 450

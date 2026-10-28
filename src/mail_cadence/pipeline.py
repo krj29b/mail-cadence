@@ -161,7 +161,9 @@ async def run_dispatch(options: DispatchOptions, settings: Settings) -> int:
             return EXIT_CONFIG_ERROR
         if not loaded.mail_config.tasks:
             logger.warning("No tasks found in database.")
-            return EXIT_OK
+            # A real run goes on: unconfirmed reports of earlier runs are still due (D14).
+            if options.dry_run:
+                return EXIT_OK
 
         renderer = TemplateRenderer(template_dir=options.template_dir)
         mailer = AsyncMailer(settings=settings, renderer=renderer, dry_run=options.dry_run)

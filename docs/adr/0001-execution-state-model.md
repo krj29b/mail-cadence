@@ -183,6 +183,8 @@ The report message is rendered once per run and stored in `report_deliveries` wi
 
 *Amended in stage 6* (`report_store.py`): a report gets one attempt per run, without backoff inside the run, so three attempts span three runs. Exit code 4 applies when a report handled in the run, its own or an earlier one retried at its start, ends unconfirmed; an `UNKNOWN` report makes the run report 3. The dry-run report is only logged and not stored.
 
+*Amended after the re-verification of 2026-10-27 (finding A5):* a real run returned before the report step when the database held no task, so a pending report stayed `PENDING` with no attempt, for example after the last task was deleted following a failed report. A real run now continues without tasks: it retries unconfirmed reports and exits with their code (0, 3 or 4); it stores no new report, because no task was executed. A dry run without tasks still returns 0 at once. Without pending reports such a run opens no SMTP session. Tests: `test_pending_report_is_retried_when_no_task_is_left`, `test_run_without_tasks_or_reports_opens_no_smtp_session`.
+
 ### D15. Compatibility projection
 
 `tasks.last_run`, `last_status` and `last_error` stay as a read-only projection for the UI and the XML export. Only an execution of the task's current version updates them, and they no longer authorise sending. `cli.run_dispatch_pipeline` keeps its signature. `ref_dt` evaluates the schedule only; timestamps of events and leases always use the real clock.
