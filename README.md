@@ -18,7 +18,7 @@ Production-grade, asynchronous bulk email dispatch and reporting engine built in
 - **Python 3.12+ Standards:** Built with strict type safety, `asyncio.TaskGroup`, `StrEnum`, `pydantic v2`, and `pydantic-xml`.
 - **SQLite State Persistence:** SQLite runtime database storing tasks, schedules, report settings, and detailed execution logs with Write-Ahead Logging (`WAL`) mode and busy timeout handling (`30,000 ms`).
 - **Safe XML Import & Export:** Built-in `defusedxml` protection against XXE and entity expansion attacks, supporting bidirectional conversion between XML documents and SQLite data models.
-- **Timezone-Aware Throttling & Idempotency:** Hourly schedule windows with `zoneinfo` time zone awareness, midnight-spanning time calculation, a durable claim per task and window occurrence (at most one send per window, also across processes and hosts), and token bucket rate limiting.
+- **Timezone-Aware Throttling & Idempotency:** Hourly schedule windows with `zoneinfo` time zone awareness, midnight-spanning time calculation, a durable claim per task and window occurrence (at most one send per window, also across processes on one host), and token bucket rate limiting.
 - **Async SMTP Dispatch & Retries:** High-concurrency SMTP dispatch with `aiosmtplib`, `asyncio.Semaphore`, connection pooling, per-recipient retries of transient errors, and `--dry-run` simulation mode. A delivery with an unknown outcome is never resent automatically.
 - **Jinja2 Templating:** Templated task emails with path traversal defense and auto-escaped context variables, alongside consolidated HTML/plain-text batch summary reports.
 - **Web Panel:** FastAPI + HTMX panel for tasks, schedules, template previews, execution history and operator review.

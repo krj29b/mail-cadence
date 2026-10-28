@@ -16,7 +16,7 @@ Supported environment settings defined in `mail_cadence.models.Settings`:
 | `SMTP_START_TLS` | `false` | Enable STARTTLS command upgrade (`true`/`false`), usually port 587 |
 | `SMTP_ALLOW_INSECURE_AUTH` | `false` | Allow SMTP login without TLS/STARTTLS. Without it, a real run with a password but no encryption stops with exit code `1` (dry runs still work). Only for a trusted relay on the same machine or network |
 | `SMTP_TIMEOUT` | `30.0` | Timeout in seconds for SMTP operations |
-| `MAIL_CADENCE_DB` | `mail_cadence.db` | Path to SQLite database file |
+| `MAIL_CADENCE_DB` | `mail_cadence.db` | Path to SQLite database file, on a local disk of the host that runs every mail-cadence process (not a network share: WAL mode does not work there) |
 | `MAIL_CADENCE_ENV_FILE` | `./.env` | Path to the `.env` file with these settings. When set, the file must exist. Without it, `.env` is read from the current directory (if present) |
 | `MAIL_CADENCE_TEMPLATE_DIR` | `.` | Directory that task template paths are resolved against (same as `--template-dir`). Built-in templates are referenced as `builtin:<name>`, e.g. `builtin:daily_dispatch.html.j2` |
 | `ADMIN_USER` | *None* | Web panel username. Without it (and `ADMIN_PASSWORD`) the panel refuses access unless started with `serve --insecure-no-auth` on a loopback host |
