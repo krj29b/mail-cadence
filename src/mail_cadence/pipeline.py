@@ -29,6 +29,7 @@ from mail_cadence.database import get_connection, init_db
 from mail_cadence.execution_store import (
     Claim,
     ClaimRequest,
+    ClaimResult,
     ClaimStatus,
     ExecutionOutcome,
     StaleClaimError,
@@ -313,6 +314,11 @@ def _skip_claimed(
     if status == ClaimStatus.BUSY:
         _skip(run, plan, task_id, f"execution {execution_id} is running elsewhere", busy=True)
         return
+    if status == ClaimStatus.REVIEW:
+        # Every run reports 3 until the operator decides (ADR 0001, D11/D12).
+        plan.carried.append(TaskExecutionStatus.UNKNOWN)
+        _skip(run, plan, task_id, _review_reason(execution_id), busy=True)
+        return
     if status == ClaimStatus.NO_TASK or execution_id is None:
         _skip(run, plan, task_id, "task was deleted")
         return
@@ -325,6 +331,13 @@ def _skip_claimed(
         plan,
         task_id,
         f"already executed in this window: execution {execution_id} is {outcome.state}",
+    )
+
+
+def _review_reason(execution_id: int | None) -> str:
+    return (
+        f"execution {execution_id} has deliveries with an unknown outcome; "
+        "resolve them before the task is sent again"
     )
 
 
@@ -469,7 +482,8 @@ async def dispatch_single_task(
 
     The same ``idempotency_key`` returns the result of the earlier send instead of
     sending again; without a key every call is a new send. A task that another worker
-    is sending is reported as SKIPPED_BUSY. Raises LookupError if the task does not exist.
+    is sending, or whose earlier delivery has an unresolved unknown outcome, is reported
+    as SKIPPED_BUSY and nothing is sent. Raises LookupError if the task does not exist.
     """
     with closing(get_connection(db_path)) as conn:
         repo = DatabaseRepository(conn)
@@ -486,9 +500,10 @@ async def dispatch_single_task(
         result = await _manual_result(
             run, task_id, claimed.status, claimed.claim, claimed.execution_id
         )
-        repo.finish_run(
-            run_id, _exit_code([result.status], report_ok=True), result.status.value, None
-        )
+        statuses = [result.status]
+        if claimed.status == ClaimStatus.REVIEW:
+            statuses.append(TaskExecutionStatus.UNKNOWN)
+        repo.finish_run(run_id, _exit_code(statuses, report_ok=True), result.status.value, None)
         return result
 
 
@@ -509,7 +524,10 @@ async def _manual_result(
     if status == ClaimStatus.DONE and execution_id is not None:
         # Same key again (e.g. a repeated HTTP request): report, never resend.
         return _result(task_id, run.repo.execution_outcome(execution_id), started)
-    reason = f"execution {execution_id} is running elsewhere"
+    if status == ClaimStatus.REVIEW:
+        reason = _review_reason(execution_id)
+    else:
+        reason = f"execution {execution_id} is running elsewhere"
     result = TaskExecutionResult(
         task_id=task_id, status=TaskExecutionStatus.SKIPPED_BUSY, error_details=reason
     )
@@ -553,16 +571,23 @@ def _plan_simulation(
         if instance is not None and preview is not None and preview.status == ClaimStatus.CLAIMED:
             scheduled.append((task, *_window_controls(controls, instance)))
             continue
-        if instance is None:
+        if instance is None or preview is None:
             reason, status = _inactive_reason(scheduler, task), TaskExecutionStatus.SKIPPED_SCHEDULE
-        elif preview is not None and preview.status == ClaimStatus.BUSY:
-            reason, status = "running elsewhere", TaskExecutionStatus.SKIPPED_BUSY
         else:
-            reason, status = "already executed in this window", TaskExecutionStatus.SKIPPED_SCHEDULE
+            reason, status = _simulated_skip(preview)
         result = TaskExecutionResult(task_id=task.id, status=status, error_details=reason)
         skipped.append(result)
         repo.log_task_execution(result, batch_id=batch_id, dry_run=True)
     return scheduled, skipped
+
+
+def _simulated_skip(preview: ClaimResult) -> tuple[str, TaskExecutionStatus]:
+    """Why a dry run skips a task whose window is open: the answer of ``peek_claim``."""
+    if preview.status == ClaimStatus.BUSY:
+        return "running elsewhere", TaskExecutionStatus.SKIPPED_BUSY
+    if preview.status == ClaimStatus.REVIEW:
+        return _review_reason(preview.execution_id), TaskExecutionStatus.SKIPPED_BUSY
+    return "already executed in this window", TaskExecutionStatus.SKIPPED_SCHEDULE
 
 
 async def _simulate_tasks(

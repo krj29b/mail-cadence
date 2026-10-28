@@ -19,6 +19,7 @@ from mail_cadence.execution_store import (
     DEFAULT_LEASE,
     Claim,
     ClaimRequest,
+    ClaimResult,
     ClaimStatus,
     ExecutionBusyError,
     Resolution,
@@ -452,6 +453,86 @@ def test_resolution_is_refused_when_not_allowed(repo: DatabaseRepository, clock:
     assert repo.start_attempt(active) is not None
     with pytest.raises(ExecutionBusyError):
         repo.resolve_unknown(claim.execution_id, B, Resolution.FAILED, actor="op", reason="x")
+
+
+# --- An unresolved UNKNOWN blocks every new execution of the task (D12, audit A1) -------
+
+
+def _claim_status(repo: DatabaseRepository, window_key: str) -> tuple[ClaimStatus, int | None]:
+    result = repo.claim_execution(ClaimRequest("T1", window_key, "run-1", "owner-2"))
+    return result.status, result.execution_id
+
+
+def test_unknown_outcome_blocks_manual_sends_new_windows_and_generations(
+    repo: DatabaseRepository,
+) -> None:
+    claim = _needs_review(repo)
+    blocked = (ClaimStatus.REVIEW, claim.execution_id)
+
+    assert _claim_status(repo, "manual:click-1") == blocked
+    assert _claim_status(repo, "S1@2026-10-28T06:00:00+00:00") == blocked
+    assert repo.reset_task_window_state("T1") is True
+    assert _claim_status(repo, WINDOW) == blocked
+    assert repo.peek_claim("T1", "manual:click-2") == ClaimResult(*blocked)
+    assert _claim_status(repo, "manual:click-1")[0] == ClaimStatus.REVIEW
+    assert repo.conn.execute("SELECT COUNT(*) FROM task_executions").fetchone()[0] == 1
+
+
+def test_resolving_every_unknown_recipient_unblocks_the_task(repo: DatabaseRepository) -> None:
+    claim = _needs_review(repo)
+    repo.resolve_unknown(claim.execution_id, A, Resolution.ACCEPTED, actor="op", reason="log")
+    assert _claim_status(repo, "manual:click-1")[0] == ClaimStatus.REVIEW, "B is still UNKNOWN"
+    repo.resolve_unknown(claim.execution_id, B, Resolution.FAILED, actor="op", reason="bounce")
+    assert _claim_status(repo, "manual:click-1")[0] == ClaimStatus.CLAIMED
+
+
+def test_unknown_outcome_of_one_task_does_not_block_another(repo: DatabaseRepository) -> None:
+    repo.save_single_task(_task("T2"))
+    _needs_review(repo)
+    _claim(repo, "owner-2", task_id="T2", window_key="manual:click-1")
+
+
+def test_expired_owner_with_attempt_in_flight_blocks_a_new_window(
+    repo: DatabaseRepository, clock: FakeClock
+) -> None:
+    """The lease expired, but the old SMTP session may still be running (audit A2)."""
+    old = _claim(repo, "owner-1")
+    assert repo.start_attempt(old) is not None
+    clock.advance(seconds=DEFAULT_LEASE.total_seconds() + 1)
+
+    assert _claim_status(repo, "S1@2026-10-28T06:00:00+00:00") == (
+        ClaimStatus.REVIEW,
+        old.execution_id,
+    )
+    assert _execution_state(repo, old.execution_id) == "NEEDS_REVIEW"
+
+
+def test_dry_run_preview_sees_an_attempt_left_in_flight(
+    repo: DatabaseRepository, clock: FakeClock
+) -> None:
+    old = _claim(repo, "owner-1")
+    assert repo.start_attempt(old) is not None
+    clock.advance(seconds=DEFAULT_LEASE.total_seconds() + 1)
+    preview = repo.peek_claim("T1", "manual:click-1")
+    assert preview == ClaimResult(ClaimStatus.REVIEW, old.execution_id)
+    assert _execution_state(repo, old.execution_id) == "ACTIVE", "a preview writes nothing"
+
+
+def test_legacy_review_without_recipient_rows_does_not_block(repo: DatabaseRepository) -> None:
+    """Migration 6 keeps legacy PARTIAL/FAILED as NEEDS_REVIEW without recipient rows; it
+    blocks only its own window occurrence (plan 6.4)."""
+    claim = _claim(repo)
+    repo.release_execution(claim)
+    with repo.conn:
+        repo.conn.execute(
+            "DELETE FROM execution_recipients WHERE execution_id = ?", (claim.execution_id,)
+        )
+        repo.conn.execute(
+            "UPDATE task_executions SET state = 'NEEDS_REVIEW' WHERE execution_id = ?",
+            (claim.execution_id,),
+        )
+    assert _status(repo, "owner-2") == ClaimStatus.DONE
+    assert _claim_status(repo, "manual:click-1")[0] == ClaimStatus.CLAIMED
 
 
 # --- Versions, generations and identities ----------------------------------------------

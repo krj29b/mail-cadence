@@ -139,7 +139,7 @@ The web panel's **Executions** page lists every execution with its task version,
 - **Not delivered**: the log shows it was not;
 - **Send again**: the next dispatch run sends the stored message again, if the same window occurrence is still open (once it has ended, no run picks the execution up again); first make sure the worker that made the attempt is no longer running, because nothing can stop an SMTP connection it still holds. For a manual send, use the **Run** button again instead.
 
-A decision refers to the attempt shown on the page and is refused if a newer attempt exists. It is recorded with the panel user's name. The **Run** button on the Tasks page sends a task once per page load: clicking again reports the same send; reload the page to send it again.
+Until every `UNKNOWN` recipient of an execution has a decision, the task is not sent at all: later window occurrences, a reset of the window state and the **Run** button skip it as `SKIPPED_BUSY` ("unknown outcome"), and each dispatch run that skips it exits with code `3`. A decision refers to the attempt shown on the page and is refused if a newer attempt exists. It is recorded with the panel user's name. The **Run** button on the Tasks page sends a task once per page load: clicking again reports the same send; reload the page to send it again.
 
 #### Example Dispatch Commands
 ```bash

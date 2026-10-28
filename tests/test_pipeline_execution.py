@@ -208,6 +208,23 @@ def test_dry_run_reports_an_executed_window_without_touching_it(
     assert last == ("SKIPPED_SCHEDULE", "already executed in this window", 1)
 
 
+def test_dry_run_shows_a_task_held_by_an_unknown_outcome(tmp_path: Path, sink: SMTPSink) -> None:
+    db_path = _prepare(tmp_path)
+    sink.drop_after_data = 1
+    assert _run(db_path, sink.port) == EXIT_UNKNOWN
+    before = {t: _count(db_path, t) for t in EXECUTION_TABLES}
+
+    _run(db_path, sink.port, dry_run=True, ref_dt=REF_DT + timedelta(days=1))
+
+    assert {t: _count(db_path, t) for t in EXECUTION_TABLES} == before
+    assert len(sink.deliveries) == 1
+    status, details, dry_run = _rows(
+        db_path, "SELECT status, error_details, dry_run FROM execution_logs"
+    )[-1]
+    assert (status, dry_run) == ("SKIPPED_BUSY", 1)
+    assert "unknown outcome" in str(details)
+
+
 # --- Render errors ---------------------------------------------------------------------
 
 

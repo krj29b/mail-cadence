@@ -4,7 +4,8 @@
 without importing the implementation. ``ExecutionMachine`` drives the repository and
 the model with the same random sequence of operations - claim, attempt, results
 (accepted, 4xx, 5xx, unknown, missing), release, heartbeat, lease expiry, recovery,
-edit, reset, next window, restart under a new owner, late results of old owners - and
+edit, reset, next window, restart under a new owner, late results of old owners,
+operator resolution of UNKNOWN recipients - and
 after every step compares the returned values and the whole stored state with the
 model. Safety invariants are also checked on the database directly.
 
@@ -33,6 +34,8 @@ from mail_cadence.execution_store import (
     Attempt,
     Claim,
     ClaimRequest,
+    ExecutionBusyError,
+    Resolution,
     StaleClaimError,
 )
 from mail_cadence.models import (
@@ -77,6 +80,7 @@ class MRecipient:
     state: str = "PENDING"
     attempts: int = 0
     next_at: float | None = None
+    budget: int = MAX_RETRIES + 1  # an operator's RETRY adds a fresh budget
 
 
 @dataclass
@@ -139,6 +143,27 @@ class Model:
                 self.settle(e)
         return None
 
+    def unresolved(self, exclude: int | None) -> int | None:
+        """The oldest other execution with a recipient whose outcome nobody knows."""
+        return min(
+            (
+                e.id
+                for e in self.executions.values()
+                if e.id != exclude
+                and any(r.state in ("UNKNOWN", "IN_FLIGHT") for r in e.recipients.values())
+            ),
+            default=None,
+        )
+
+    def blocked(self, exclude: int | None) -> tuple[str, int | None, int | None] | None:
+        blocker = self.blocker()
+        if blocker is not None:
+            return "BUSY", blocker, None
+        unresolved = self.unresolved(exclude)
+        if unresolved is not None:
+            return "REVIEW", unresolved, None
+        return None
+
     def key(self, kind: str) -> str:
         return f"S1@w{self.window}" if kind == "scheduled" else f"manual:{kind}"
 
@@ -157,9 +182,9 @@ class Model:
         return self.claim_existing(owner, current)
 
     def claim_new(self, owner: str, key: str) -> tuple[str, int | None, int | None]:
-        blocker = self.blocker()
-        if blocker is not None:
-            return "BUSY", blocker, None
+        blocked = self.blocked(None)
+        if blocked is not None:
+            return blocked
         e = MExecution(
             id=len(self.executions) + 1,
             generation=self.generation,
@@ -179,9 +204,9 @@ class Model:
             return ("CLAIMED", e.id, e.token) if e.owner == owner else ("BUSY", e.id, None)
         if e.state in OWNED and self.settle(e) in FINAL:
             return "DONE", e.id, None
-        blocker = self.blocker()
-        if blocker is not None:
-            return "BUSY", blocker, None
+        blocked = self.blocked(e.id)
+        if blocked is not None:
+            return blocked
         e.token += 1
         e.owner, e.state = owner, "CLAIMED"
         e.lease_until = self.clock + LEASE_SECONDS
@@ -205,7 +230,7 @@ class Model:
             addr
             for addr, r in e.recipients.items()
             if r.state in ("PENDING", "RETRY_WAIT")
-            and r.attempts < MAX_RETRIES + 1
+            and r.attempts < r.budget
             and (r.next_at is None or r.next_at <= self.clock)
         )
         if not due:
@@ -229,7 +254,7 @@ class Model:
             r = e.recipients[addr]
             outcome = results.get(addr)
             if outcome == Outcome.TRANSIENT:
-                if r.attempts < MAX_RETRIES + 1:
+                if r.attempts < r.budget:
                     r.state = "RETRY_WAIT"
                     r.next_at = self.clock + 0.5 * 2 ** max(0, r.attempts - 1)
                 else:
@@ -250,6 +275,26 @@ class Model:
         for e in renewed:
             e.lease_until = self.clock + LEASE_SECONDS
         return len(renewed)
+
+    def resolve(
+        self, execution_id: int, address: str, resolution: Resolution
+    ) -> str | ExecutionBusyError:
+        """D12: allowed once the owner is gone; RETRY adds a fresh budget."""
+        e = self.executions[execution_id]
+        if e.state in OWNED:
+            if not self.expired(e):
+                return ExecutionBusyError()
+            self.settle(e)
+        r = e.recipients[address]
+        r.state = {
+            Resolution.ACCEPTED: "ACCEPTED",
+            Resolution.FAILED: "PERMANENT_FAILURE",
+            Resolution.RETRY: "PENDING",
+        }[resolution]
+        r.next_at = None
+        if resolution == Resolution.RETRY:
+            r.budget += MAX_RETRIES + 1
+        return self.settle(e)
 
     def recover(self) -> list[int]:
         expired = [e for e in self.executions.values() if e.state in OWNED and self.expired(e)]
@@ -394,6 +439,29 @@ class ExecutionMachine(RuleBasedStateMachine):
     def heartbeat(self, owner: str) -> None:
         assert self.repo.heartbeat(owner) == self.model.heartbeat(owner)
 
+    @rule(data=st.data())
+    def resolve(self, data: st.DataObject) -> None:
+        """An operator decides on one UNKNOWN recipient (D12)."""
+        unknown = sorted(
+            (e.id, addr)
+            for e in self.model.executions.values()
+            for addr, r in e.recipients.items()
+            if r.state == "UNKNOWN"
+        )
+        if not unknown:
+            return
+        execution_id, address = data.draw(st.sampled_from(unknown))
+        resolution = data.draw(st.sampled_from(list(Resolution)))
+        expected = self.model.resolve(execution_id, address, resolution)
+        try:
+            state = self.repo.resolve_unknown(
+                execution_id, address, resolution, actor="operator", reason="checked"
+            )
+        except ExecutionBusyError:
+            assert isinstance(expected, ExecutionBusyError)
+            return
+        assert state == expected
+
     @rule()
     def recover(self) -> None:
         assert self.repo.recover_abandoned() == self.model.recover()
@@ -444,16 +512,30 @@ class ExecutionMachine(RuleBasedStateMachine):
 
     @invariant()
     def safety(self) -> None:
-        """Checked on the database alone (I1, I12, final recipients stay final)."""
+        """Checked on the database alone (I1, I4, I12)."""
         owned = self.conn.execute(
             "SELECT COUNT(*) FROM task_executions WHERE state IN ('CLAIMED', 'ACTIVE')"
         ).fetchone()[0]
         assert owned <= 1
         over_budget = self.conn.execute(
-            "SELECT COUNT(*) FROM execution_recipients WHERE attempt_count > ?",
-            (MAX_RETRIES + 1,),
+            "SELECT COUNT(*) FROM execution_recipients WHERE attempt_count > max_attempts"
         ).fetchone()[0]
         assert over_budget == 0
+        # D12: while an outcome is unresolved, no other execution of the task sends.
+        unresolved = {
+            r[0]
+            for r in self.conn.execute(
+                "SELECT DISTINCT execution_id FROM execution_recipients WHERE state = 'UNKNOWN'"
+            )
+        }
+        active = {
+            r[0]
+            for r in self.conn.execute(
+                "SELECT execution_id FROM delivery_attempts WHERE state = 'IN_FLIGHT'"
+            )
+        }
+        for execution_id in active:
+            assert not unresolved - {execution_id}, (execution_id, unresolved)
         attempts_per_recipient: Counter[tuple[int, str]] = Counter()
         for execution_id, recipients_json in self.conn.execute(
             "SELECT execution_id, recipients_json FROM delivery_attempts"

@@ -41,6 +41,9 @@ SENDABLE_STATES = frozenset({"PENDING", "RETRY_WAIT"})
 class ClaimStatus(StrEnum):
     CLAIMED = "CLAIMED"  # the caller owns the execution and may start attempts
     BUSY = "BUSY"  # another live owner holds an execution of this task
+    # Another execution of this task has a recipient whose outcome is unknown; nothing of
+    # the task is sent until an operator resolves it (D12).
+    REVIEW = "REVIEW"
     DONE = "DONE"  # the execution for this key has already finished
     NO_TASK = "NO_TASK"  # no live task with this id
 
@@ -243,6 +246,9 @@ class ExecutionStoreMixin:
 
         At most one execution per task identity is owned at a time, across generations,
         window keys and manual sends; an expired owner is recovered first (D8, D10).
+        While another execution of the task has an UNKNOWN recipient, the answer is
+        REVIEW: neither a new window, a new generation nor a manual send may bypass the
+        operator's decision (D12).
         """
         with self._write_transaction() as now:
             identity = self.conn.execute(
@@ -264,9 +270,9 @@ class ExecutionStoreMixin:
     def _claim_new(
         self, request: ClaimRequest, identity: sqlite3.Row, now: datetime, lease: timedelta
     ) -> ClaimResult:
-        blocker = self._owned_execution_of(identity["uid"], now)
-        if blocker is not None:
-            return ClaimResult(ClaimStatus.BUSY, blocker)
+        blocked = self._blocked(identity["uid"], now, None)
+        if blocked is not None:
+            return blocked
         version = self.conn.execute(
             "SELECT version, definition_json FROM task_versions WHERE task_uid = ? "
             "ORDER BY version DESC LIMIT 1",
@@ -333,9 +339,9 @@ class ExecutionStoreMixin:
                 return ClaimResult(ClaimStatus.CLAIMED, execution_id, self._claim_of(row))
             if self._settle(execution_id, now, "lease_expired") in FINAL_STATES:
                 return ClaimResult(ClaimStatus.DONE, execution_id)
-        blocker = self._owned_execution_of(row["task_uid"], now)
-        if blocker is not None:
-            return ClaimResult(ClaimStatus.BUSY, blocker)
+        blocked = self._blocked(row["task_uid"], now, execution_id)
+        if blocked is not None:
+            return blocked
         token = int(row["fencing_token"]) + 1
         self.conn.execute(
             "UPDATE task_executions SET state = 'CLAIMED', owner = ?, fencing_token = ?, "
@@ -379,6 +385,32 @@ class ExecutionStoreMixin:
             self._settle(int(row["execution_id"]), now, "lease_expired")
             return None
         return int(row["execution_id"])
+
+    def _unresolved_execution_of(self, task_uid: int, exclude: int | None) -> int | None:
+        """The oldest execution of ``task_uid`` (other than ``exclude``) with a recipient
+        that is UNKNOWN or still IN_FLIGHT, that is, whose outcome nobody knows yet."""
+        row = self.conn.execute(
+            "SELECT MIN(e.execution_id) FROM task_executions e "
+            "JOIN execution_recipients r ON r.execution_id = e.execution_id "
+            "WHERE e.task_uid = ? AND e.execution_id IS NOT ? "
+            "AND r.state IN ('UNKNOWN', 'IN_FLIGHT')",
+            (task_uid, exclude),
+        ).fetchone()
+        return None if row[0] is None else int(row[0])
+
+    def _blocked(self, task_uid: int, now: datetime, exclude: int | None) -> ClaimResult | None:
+        """BUSY for a live owner, REVIEW for an unresolved outcome, None if free.
+
+        The owner check runs first: settling an expired owner turns its in-flight
+        recipients into UNKNOWN, which then blocks the claim as REVIEW.
+        """
+        owner = self._owned_execution_of(task_uid, now)
+        if owner is not None:
+            return ClaimResult(ClaimStatus.BUSY, owner)
+        unresolved = self._unresolved_execution_of(task_uid, exclude)
+        if unresolved is not None:
+            return ClaimResult(ClaimStatus.REVIEW, unresolved)
+        return None
 
     # --- settle and recover -----------------------------------------------------------
 
@@ -698,6 +730,10 @@ class ExecutionStoreMixin:
                 return ClaimResult(ClaimStatus.DONE, int(row["execution_id"]))
             if row["state"] in OWNED_STATES and not self._lease_expired(row, now):
                 return ClaimResult(ClaimStatus.BUSY, int(row["execution_id"]))
+        same = next((int(r["execution_id"]) for r in rows if r["same_key"]), None)
+        unresolved = self._unresolved_execution_of(identity["uid"], same)
+        if unresolved is not None:
+            return ClaimResult(ClaimStatus.REVIEW, unresolved)
         return ClaimResult(ClaimStatus.CLAIMED)
 
     def next_attempt_at(self, execution_id: int) -> datetime | None:

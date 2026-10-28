@@ -11,7 +11,7 @@ import sqlite3
 import threading
 from collections.abc import Iterator
 from contextlib import closing
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -19,6 +19,7 @@ from fastapi.testclient import TestClient
 
 from dispatch_worker import PROCESS_TIMEOUT, spawn_batch, stop
 from mail_cadence.database import get_connection, init_db
+from mail_cadence.execution_store import Resolution
 from mail_cadence.models import (
     BodyTemplate,
     HourWindow,
@@ -27,13 +28,17 @@ from mail_cadence.models import (
     ReportSettings,
     Schedule,
     Settings,
+    TaskExecutionResult,
+    TaskExecutionStatus,
     WorkSchedules,
 )
 from mail_cadence.pipeline import (
     EXIT_OK,
     EXIT_REPORT_FAILED,
     EXIT_TASK_FAILED,
+    EXIT_UNKNOWN,
     DispatchOptions,
+    dispatch_single_task,
     run_dispatch,
 )
 from mail_cadence.repository import DatabaseRepository
@@ -216,6 +221,58 @@ def test_lost_reply_after_data_is_not_resent(tmp_path: Path, sink: SMTPSink) -> 
 
     assert sink.accepted_count(A) == 1
     assert EXIT_OK not in (first, second), "an unknown outcome is never reported as success"
+
+
+def _send_now(db_path: Path, port: int, key: str) -> TaskExecutionResult:
+    return asyncio.run(
+        dispatch_single_task(db_path, TASK_ID, _settings(port), db_path.parent, idempotency_key=key)
+    )
+
+
+def _unknown_attempt(db_path: Path) -> tuple[int, int, int]:
+    """(execution id, attempt id, number of recorded operator decisions)."""
+    with closing(get_connection(db_path)) as conn:
+        execution_id, attempt_id = conn.execute(
+            "SELECT execution_id, attempt_id FROM delivery_attempts WHERE state = 'UNKNOWN'"
+        ).fetchone()
+        decisions = conn.execute(
+            "SELECT COUNT(*) FROM execution_events WHERE kind = 'unknown_resolved'"
+        ).fetchone()[0]
+    return execution_id, attempt_id, decisions
+
+
+def test_unknown_outcome_blocks_new_sends_until_an_operator_decides(
+    tmp_path: Path, sink: SMTPSink
+) -> None:
+    """Audit A1: neither a manual send with a new key nor the next window occurrence
+    may send the task again while an earlier outcome is unknown."""
+    db_path = _prepare(tmp_path, _task([A], max_retries=2))
+    sink.drop_after_data = 1
+    assert _dispatch(db_path, sink.port) == EXIT_UNKNOWN
+
+    manual = _send_now(db_path, sink.port, "click-1")
+    next_day = DispatchOptions(
+        db_path=db_path, template_dir=tmp_path, ref_dt=REF_DT + timedelta(days=1)
+    )
+    assert asyncio.run(run_dispatch(next_day, _settings(sink.port))) == EXIT_UNKNOWN
+
+    assert manual.status == TaskExecutionStatus.SKIPPED_BUSY
+    assert "unknown outcome" in str(manual.error_details)
+    assert sink.accepted_count(A) == 1
+    execution_id, attempt_id, decisions = _unknown_attempt(db_path)
+    assert decisions == 0
+
+    with closing(get_connection(db_path)) as conn:
+        DatabaseRepository(conn).resolve_unknown(
+            execution_id,
+            A,
+            Resolution.FAILED,
+            actor="operator",
+            reason="not in the server log",
+            attempt_id=attempt_id,
+        )
+    assert _send_now(db_path, sink.port, "click-2").status == TaskExecutionStatus.SUCCESS
+    assert sink.accepted_count(A) == 2
 
 
 # --- T06 / T08: results belong to the version that produced them -----------------------

@@ -70,7 +70,8 @@ class TaskExecutionStatus(StrEnum):
     # Some recipients may or may not have the message; never resent automatically.
     UNKNOWN = "UNKNOWN"
     SKIPPED_SCHEDULE = "SKIPPED_SCHEDULE"
-    # Another worker owns the task right now (ADR 0001, D7).
+    # Another worker owns the task right now (ADR 0001, D7), or an earlier delivery of
+    # the task has an unknown outcome that an operator has not resolved yet (D12).
     SKIPPED_BUSY = "SKIPPED_BUSY"
 
 
