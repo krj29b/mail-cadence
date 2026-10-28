@@ -389,8 +389,13 @@ class AsyncMailer:
 
         if self._in_context and self._pool is not None:
             pooled = self._take_pooled_client() if reuse else None
+            if pooled is not None and not pooled.is_connected:
+                # Never reconnect a client the server disconnected: aiosmtplib 3.0.x
+                # hangs in connect() on such an object. Open a new one instead.
+                await self._close_client(pooled)
+                pooled = None
             client = pooled if pooled is not None else self._get_smtp_connection()
-            reused = pooled is not None and pooled.is_connected
+            reused = pooled is not None
             keep_client = True
             try:
                 await self._ensure_connected(client)
