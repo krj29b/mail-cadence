@@ -183,6 +183,15 @@ def test_template_renderer_missing_template_relative(tmp_path: Path) -> None:
         renderer.render("non_existent_template.j2", {"name": "World"})
 
 
+def test_template_renderer_absolute_path(tmp_path: Path) -> None:
+    tpl_file = tmp_path / "abs_test.j2"
+    tpl_file.write_text("Abs {{ var }}")
+
+    renderer = TemplateRenderer(template_dir=tmp_path)
+    res = renderer.render(str(tpl_file), {"var": "Val"})
+    assert res == "Abs Val"
+
+
 def test_template_renderer_missing_template_absolute(tmp_path: Path) -> None:
     renderer = TemplateRenderer(template_dir=tmp_path)
     abs_missing_path = str(tmp_path / "non_existent_abs_template.j2")

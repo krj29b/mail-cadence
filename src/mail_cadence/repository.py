@@ -92,7 +92,7 @@ class DatabaseRepository(ReportStoreMixin, ExecutionViewsMixin):
     ) -> None:
         with self.conn:
             self._save_work_schedules(work_schedules, mode=mode)
-            sync_definitions(self.conn)
+            sync_definitions(self.conn, self._clock())
 
     def _save_work_schedules(
         self, work_schedules: WorkSchedules, mode: Literal["upsert", "replace"] = "upsert"
@@ -287,7 +287,7 @@ class DatabaseRepository(ReportStoreMixin, ExecutionViewsMixin):
     ) -> None:
         with self.conn:
             self._save_mail_configuration(mail_config, mode=mode)
-            sync_definitions(self.conn)
+            sync_definitions(self.conn, self._clock())
 
     def _save_mail_configuration(
         self,
@@ -316,7 +316,7 @@ class DatabaseRepository(ReportStoreMixin, ExecutionViewsMixin):
             self._save_work_schedules(work_schedules, mode=mode)
             self._save_mail_configuration(mail_config, mode=mode)
             # Identities follow task names, so a replace import keeps them (ADR 0001, D3).
-            sync_definitions(self.conn)
+            sync_definitions(self.conn, self._clock())
 
     def _delete_all_tasks(self) -> None:
         self.conn.execute("DELETE FROM task_context_variables")
@@ -438,13 +438,13 @@ class DatabaseRepository(ReportStoreMixin, ExecutionViewsMixin):
                     result.error_details,
                     result.attempt_count,
                     int(dry_run),
-                    to_utc_iso(datetime.now(UTC)),
+                    to_utc_iso(self._clock()),
                 ),
             )
 
             if dry_run or result.status in _SKIPPED_STATUSES:
                 return
-            run_at = to_utc_iso(executed_at or datetime.now(UTC))
+            run_at = to_utc_iso(executed_at or self._clock())
             self.conn.execute(
                 """
                 UPDATE tasks
@@ -553,7 +553,7 @@ class DatabaseRepository(ReportStoreMixin, ExecutionViewsMixin):
         with self.conn:
             existed = self._task_exists(task.id)
             self._save_task(task, mode="upsert")
-            sync_definitions(self.conn)
+            sync_definitions(self.conn, self._clock())
             if reset_window_state:
                 self._reset_task_window_state(task.id)
                 if existed:
@@ -588,7 +588,7 @@ class DatabaseRepository(ReportStoreMixin, ExecutionViewsMixin):
             FROM task_identities
             WHERE task_id = ? AND deleted_at IS NULL
             """,
-            (to_utc_iso(datetime.now(UTC)), reason, task_id),
+            (to_utc_iso(self._clock()), reason, task_id),
         )
 
     def _reset_task_window_state(self, task_id: str) -> bool:
@@ -607,13 +607,13 @@ class DatabaseRepository(ReportStoreMixin, ExecutionViewsMixin):
     def delete_mail_task(self, task_id: str) -> bool:
         with self.conn:
             cursor = self.conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
-            sync_definitions(self.conn)
+            sync_definitions(self.conn, self._clock())
             return cursor.rowcount > 0
 
     def save_single_schedule(self, schedule: Schedule) -> None:
         with self.conn:
             self._save_schedule(schedule)
-            sync_definitions(self.conn)
+            sync_definitions(self.conn, self._clock())
 
     def schedule_exists(self, schedule_id: str) -> bool:
         row = self.conn.execute("SELECT 1 FROM schedules WHERE id = ?", (schedule_id,)).fetchone()
@@ -622,7 +622,7 @@ class DatabaseRepository(ReportStoreMixin, ExecutionViewsMixin):
     def delete_schedule(self, schedule_id: str) -> bool:
         with self.conn:
             cursor = self.conn.execute("DELETE FROM schedules WHERE id = ?", (schedule_id,))
-            sync_definitions(self.conn)
+            sync_definitions(self.conn, self._clock())
             return cursor.rowcount > 0
 
     def get_recent_execution_logs(

@@ -287,15 +287,16 @@ def to_utc_iso(dt: datetime) -> str:
 # rows that no longer validate still get an identity and a version.
 
 
-def sync_definitions(conn: sqlite3.Connection) -> None:
+def sync_definitions(conn: sqlite3.Connection, now: datetime | None = None) -> None:
     """Create or retire task identities and record new task and schedule versions.
 
-    Runs inside the caller's transaction and never commits.
+    Runs inside the caller's transaction and never commits. ``now`` stamps the new
+    rows; the repository passes its clock, migrations use the real time.
     """
-    now = to_utc_iso(datetime.now(UTC))
-    _sync_task_identities(conn, now)
-    _sync_task_versions(conn, now)
-    _sync_schedule_versions(conn, now)
+    stamp = to_utc_iso(now or datetime.now(UTC))
+    _sync_task_identities(conn, stamp)
+    _sync_task_versions(conn, stamp)
+    _sync_schedule_versions(conn, stamp)
 
 
 def _sync_task_identities(conn: sqlite3.Connection, now: str) -> None:

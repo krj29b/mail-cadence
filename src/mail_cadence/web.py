@@ -1,9 +1,9 @@
 import base64
 import binascii
-import functools
 import json
 import logging
 import math
+import os
 import secrets
 import sqlite3
 import uuid
@@ -202,33 +202,38 @@ def verify_same_origin(request: Request) -> None:
             raise forbidden
 
 
+def _is_skipped_name(name: str) -> bool:
+    return name.startswith((".", "_")) or name in _IGNORED_TEMPLATE_DIRS
+
+
 def _is_valid_task_template(path: Path, base_path: Path) -> bool:
     if not path.is_file() or path.suffix.lower() not in _VALID_TEMPLATE_EXTENSIONS:
         return False
     if path.name in INTERNAL_TEMPLATES:
         return False
-    rel_parts = path.relative_to(base_path).parts
-    return not any(p.startswith((".", "_")) or p in _IGNORED_TEMPLATE_DIRS for p in rel_parts)
+    return not any(_is_skipped_name(p) for p in path.relative_to(base_path).parts)
 
 
-@functools.lru_cache(maxsize=128)
-def _discover_templates_cached(base_path_str: str) -> tuple[str, ...]:
-    base_path = Path(base_path_str)
-    templates_found: list[str] = []
-    if base_path.is_dir():
-        templates_found = sorted(
-            path.relative_to(base_path).as_posix()
-            for path in base_path.rglob("*")
-            if _is_valid_task_template(path, base_path)
+def _discover_user_templates(base_path: Path) -> list[str]:
+    """Task templates under ``base_path``; skipped directories are never walked into.
+
+    Not cached, so a template added while the panel runs is listed on the next request.
+    """
+    found: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(base_path):
+        dirnames[:] = [d for d in dirnames if not _is_skipped_name(d)]
+        root = Path(dirpath)
+        found.extend(
+            (root / name).relative_to(base_path).as_posix()
+            for name in filenames
+            if _is_valid_task_template(root / name, base_path)
         )
-    return tuple(templates_found)
+    return sorted(found)
 
 
 def _discover_available_templates(template_dir: str | Path) -> list[str]:
     """List templates usable by tasks: files in template_dir, then the built-in ones."""
-    base_path_str = str(Path(template_dir).resolve())
-    templates_found = list(_discover_templates_cached(base_path_str))
-    return templates_found + list_builtin_templates()
+    return _discover_user_templates(Path(template_dir).resolve()) + list_builtin_templates()
 
 
 def _get_tasks_window_status(

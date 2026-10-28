@@ -230,3 +230,14 @@ def test_validate_xml_configs_empty_schedules_and_tasks() -> None:
         schedules=[Schedule(id="SCHED-1", allowed_hours=[])],
     )
     validate_xml_configs(empty_mail_config, schedules_with_items)
+
+
+def test_xml_loader_invalid_schemas(tmp_path: Path) -> None:
+    bad_file = tmp_path / "bad.xml"
+    bad_file.write_bytes(b"<Root><Child/></Root>")
+
+    with pytest.raises(XMLValidationError, match="Invalid MailConfiguration XML schema"):
+        load_mail_configuration(bad_file)
+
+    with pytest.raises(XMLValidationError, match="Invalid WorkSchedules XML schema"):
+        load_work_schedules(bad_file)

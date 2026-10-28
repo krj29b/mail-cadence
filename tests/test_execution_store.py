@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from dispatch_worker import PROCESS_TIMEOUT, claimers
-from mail_cadence.database import get_connection, init_db
+from mail_cadence.database import get_connection, init_db, to_utc_iso
 from mail_cadence.execution_store import (
     DEFAULT_LEASE,
     Claim,
@@ -35,6 +35,8 @@ from mail_cadence.models import (
     RecipientResult,
     Recipients,
     Schedule,
+    TaskExecutionResult,
+    TaskExecutionStatus,
     WorkSchedules,
 )
 from mail_cadence.repository import DatabaseRepository
@@ -816,3 +818,24 @@ def test_message_is_pinned_once_and_survives_a_new_owner(
 
     row = repo.conn.execute("SELECT message_id, message_bytes FROM task_executions").fetchone()
     assert (row[0], bytes(row[1])) == ("<1@example.com>", b"first")
+
+
+def test_definition_and_log_writes_use_the_repository_clock(
+    repo: DatabaseRepository, clock: FakeClock, db_path: Path
+) -> None:
+    clock.advance(days=30)
+    stamp = to_utc_iso(clock.now)
+
+    repo.save_single_task(_task(subject="Changed"))  # new version and generation
+    repo.log_task_execution(
+        TaskExecutionResult(task_id="T1", status=TaskExecutionStatus.SUCCESS, sent_count=2)
+    )
+
+    with closing(get_connection(db_path)) as conn:
+        version = conn.execute("SELECT MAX(created_at) FROM task_versions").fetchone()[0]
+        generation = conn.execute(
+            "SELECT MAX(occurred_at) FROM execution_events WHERE kind = 'generation_started'"
+        ).fetchone()[0]
+        logged = conn.execute("SELECT MAX(executed_at) FROM execution_logs").fetchone()[0]
+        last_run = conn.execute("SELECT last_run FROM tasks WHERE id = 'T1'").fetchone()[0]
+    assert version == generation == logged == last_run == stamp

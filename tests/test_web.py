@@ -19,7 +19,7 @@ from mail_cadence.models import (
     WorkSchedules,
 )
 from mail_cadence.repository import DatabaseRepository
-from mail_cadence.web import _discover_available_templates, _discover_templates_cached, create_app
+from mail_cadence.web import _discover_available_templates, create_app
 
 
 @pytest.fixture
@@ -807,14 +807,18 @@ def test_web_rejects_cross_site_state_changes(client: TestClient) -> None:
     assert client.get("/", headers={"Sec-Fetch-Site": "cross-site"}).status_code == 200
 
 
-def test_discover_available_templates_caching(tmp_path: Path) -> None:
-    _discover_templates_cached.cache_clear()
-    (tmp_path / "test.html.j2").write_text("content")
+def test_discover_available_templates_lists_a_template_added_later(tmp_path: Path) -> None:
+    (tmp_path / "first.html.j2").write_text("content")
+    assert "second.html.j2" not in _discover_available_templates(tmp_path)
 
-    res1 = _discover_available_templates(tmp_path)
-    res2 = _discover_available_templates(tmp_path)
+    (tmp_path / "second.html.j2").write_text("content")
+    assert "second.html.j2" in _discover_available_templates(tmp_path)
 
-    assert "test.html.j2" in res1
-    assert res1 == res2
-    info = _discover_templates_cached.cache_info()
-    assert info.hits >= 1
+
+def test_discover_available_templates_skips_hidden_and_ignored_dirs(tmp_path: Path) -> None:
+    for rel in ["ok/a.j2", ".venv/b.j2", "node_modules/c.j2", "_drafts/d.j2", "ok/_e.j2"]:
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text("content")
+
+    user_templates = [t for t in _discover_available_templates(tmp_path) if ":" not in t]
+    assert user_templates == ["ok/a.j2"]
