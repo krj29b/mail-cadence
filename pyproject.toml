@@ -51,6 +51,7 @@ dependencies = [
 [project.urls]
 Homepage = "https://github.com/krj29b/mail-cadence"
 Repository = "https://github.com/krj29b/mail-cadence"
+Documentation = "https://github.com/krj29b/mail-cadence/blob/master/docs/README.md"
 Issues = "https://github.com/krj29b/mail-cadence/issues"
 
 [project.optional-dependencies]
