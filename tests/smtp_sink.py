@@ -16,7 +16,9 @@ Controls (set before the client sends the command):
 - ``drop_after_data``: close the connection without replying after the n-th body;
 - ``hold_at``: (command, n) - before the greeting of the n-th connection (CONNECT),
   before replying to the n-th MAIL command, or after the n-th body, wait until
-  ``release()``; ``held`` is set when that point is reached.
+  ``release()``; ``held`` is set when that point is reached;
+- ``close_sessions()``: send 421 to every open connection and close it, as a server
+  does on an idle timeout.
 """
 
 import asyncio
@@ -174,6 +176,7 @@ class SMTPSink:
         self._deliveries: list[Delivery] = []
         self._rcpt_attempts: list[RcptAttempt] = []
         self._commands: list[tuple[int, str]] = []
+        self._writers: dict[int, asyncio.StreamWriter] = {}  # used only on the sink loop
         self._ready = threading.Event()
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -217,11 +220,13 @@ class SMTPSink:
         with self._lock:
             self._counts["session"] += 1
             number = self._counts["session"]
+        self._writers[number] = writer
         try:
             await _Session(self, number, reader, writer).run()
         except (asyncio.IncompleteReadError, ConnectionError, _DropConnection):
             pass
         finally:
+            self._writers.pop(number, None)
             writer.close()
             with contextlib.suppress(ConnectionError):
                 await writer.wait_closed()
@@ -230,6 +235,16 @@ class SMTPSink:
 
     def release(self) -> None:
         self._release.set()
+
+    def close_sessions(self) -> None:
+        """Send 421 to every open connection and close it (idle timeout)."""
+        assert self._loop is not None
+        asyncio.run_coroutine_threadsafe(self._close_sessions(), self._loop).result(HOLD_TIMEOUT)
+
+    async def _close_sessions(self) -> None:
+        for writer in list(self._writers.values()):
+            writer.write(b"421 4.4.2 Idle timeout, closing connection\r\n")
+            writer.close()
 
     def wait_held(self, timeout: float = HOLD_TIMEOUT) -> None:
         if not self.held.wait(timeout):

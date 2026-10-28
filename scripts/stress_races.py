@@ -31,6 +31,7 @@ RACE_TESTS = (
     "tests/test_failure_matrix.py",
     "tests/test_mailer_attempts.py::test_timeout_after_the_body_is_unknown",
     "tests/test_mailer_attempts.py::test_session_with_a_late_reply_is_not_reused",
+    "tests/test_mailer_attempts.py::test_pooled_session_closed_on_idle_timeout_is_replaced",
     "tests/test_dispatch_jobs.py::test_only_one_of_many_concurrent_starts_wins",
     "tests/test_web.py::test_web_dispatch_lock_conflict",
 )

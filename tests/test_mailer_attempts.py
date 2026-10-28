@@ -5,6 +5,7 @@ started; then it is UNKNOWN and must never be retried automatically. The sink's 
 shows what was really accepted.
 """
 
+import asyncio
 from collections.abc import Iterator
 from pathlib import Path
 from typing import ClassVar
@@ -335,3 +336,91 @@ async def test_pool_drops_a_client_after_any_error(
     assert {r.outcome for r in second.values()} == {Outcome.ACCEPTED}
     assert len(_StuckClient.created) == 2, "the failed client was not reused"
     assert not _StuckClient.created[0].is_connected
+
+
+# --- Pooled sessions closed by the server ----------------------------------------------
+
+
+def _mail_sessions(sink: SMTPSink) -> list[int]:
+    return [session for session, verb in sink.commands if verb == "MAIL"]
+
+
+@pytest.mark.parametrize("noticed", [True, False], ids=["close-noticed", "close-unread"])
+async def test_pooled_session_closed_on_idle_timeout_is_replaced(
+    tmp_path: Path, sink: SMTPSink, noticed: bool
+) -> None:
+    """A server's idle timeout between two deliveries costs no recipient an attempt."""
+    mailer = _mailer(tmp_path, sink.port)
+    data = _message(mailer).data
+
+    async with mailer:
+        first = await mailer.deliver(data, [A])
+        sink.close_sessions()
+        if noticed:
+            await asyncio.sleep(0.2)  # let the client read the 421 and the close
+        second = await mailer.deliver(data, [B])
+
+    assert _outcomes(first) == {A: (Outcome.ACCEPTED, 250)}
+    assert _outcomes(second) == {B: (Outcome.ACCEPTED, 250)}
+    assert [d.session for d in sink.deliveries] == [1, 2]
+
+
+async def test_pooled_session_lost_at_mail_from_is_replaced_once(
+    tmp_path: Path, sink: SMTPSink
+) -> None:
+    mailer = _mailer(tmp_path, sink.port)
+    data = _message(mailer).data
+    sink.drop_at = ("MAIL", 2)
+
+    async with mailer:
+        await mailer.deliver(data, [A])
+        second = await mailer.deliver(data, [B])
+
+    assert _outcomes(second) == {B: (Outcome.ACCEPTED, 250)}
+    assert _mail_sessions(sink) == [1, 1, 2]
+    assert [d.recipients for d in sink.deliveries] == [(A,), (B,)]
+
+
+async def test_421_at_mail_from_on_a_pooled_session_reconnects_only_once(
+    tmp_path: Path, sink: SMTPSink
+) -> None:
+    mailer = _mailer(tmp_path, sink.port)
+    data = _message(mailer).data
+
+    async with mailer:
+        await mailer.deliver(data, [A])
+        sink.mail_code = 421  # the new connection gets it too
+        second = await mailer.deliver(data, [B])
+
+    assert _outcomes(second) == {B: (Outcome.TRANSIENT, 421)}
+    assert _mail_sessions(sink) == [1, 1, 2]
+
+
+async def test_new_session_lost_at_mail_from_is_not_reconnected(
+    tmp_path: Path, sink: SMTPSink
+) -> None:
+    mailer = _mailer(tmp_path, sink.port)
+    sink.drop_at = ("MAIL", 1)
+
+    async with mailer:
+        results = await mailer.deliver(_message(mailer).data, [A])
+
+    assert {r.outcome for r in results.values()} == {Outcome.TRANSIENT}
+    assert _mail_sessions(sink) == [1]
+
+
+async def test_pooled_session_lost_after_mail_from_is_not_reconnected(
+    tmp_path: Path, sink: SMTPSink
+) -> None:
+    """Once MAIL FROM was answered, a lost session is a failed attempt as before."""
+    mailer = _mailer(tmp_path, sink.port)
+    data = _message(mailer).data
+    sink.drop_at = ("RCPT", 2)
+
+    async with mailer:
+        await mailer.deliver(data, [A])
+        second = await mailer.deliver(data, [B])
+
+    assert {r.outcome for r in second.values()} == {Outcome.TRANSIENT}
+    assert _mail_sessions(sink) == [1, 1]
+    assert [d.recipients for d in sink.deliveries] == [(A,)]

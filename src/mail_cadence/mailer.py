@@ -48,6 +48,8 @@ AUTOESCAPE_EXTENSIONS: tuple[str, ...] = ("html", "htm", "xml", "html.j2", "htm.
 
 SMTP_PERMANENT_ERROR_MIN = 500
 SMTP_PERMANENT_ERROR_MAX = 600
+# "Service not available, closing transmission channel", also sent on an idle timeout.
+SMTP_SERVICE_CLOSING = 421
 
 # Errors that can come out of rendering a task template and building its message.
 RENDER_ERRORS: tuple[type[Exception], ...] = (TemplateError, ValueError, TypeError, OSError)
@@ -248,6 +250,13 @@ def _refusal(code: int) -> Outcome:
     return Outcome.PERMANENT if is_permanent else Outcome.TRANSIENT
 
 
+def _closed_session(exc: Exception) -> bool:
+    """The server had closed the session: no reply at all, or 421 (closing channel)."""
+    if isinstance(exc, aiosmtplib.SMTPResponseException):
+        return exc.code == SMTP_SERVICE_CLOSING
+    return isinstance(exc, aiosmtplib.SMTPServerDisconnected | ConnectionError)
+
+
 @dataclass(slots=True)
 class _Attempt:
     """Per-recipient results of one attempt and how far the SMTP transaction got."""
@@ -351,11 +360,11 @@ class AsyncMailer:
         if not client.is_connected:
             await client.connect()
 
-    def _get_pooled_or_new_client(self) -> SMTPClient:
+    def _take_pooled_client(self) -> SMTPClient | None:
         if self._pool is not None:
             with contextlib.suppress(asyncio.QueueEmpty):
                 return self._pool.get_nowait()
-        return self._get_smtp_connection()
+        return None
 
     async def _release_pooled_client(self, client: SMTPClient, keep_client: bool) -> None:
         # A client that lost its connection is never returned to the pool.
@@ -365,19 +374,27 @@ class AsyncMailer:
             await self._close_client(client)
 
     @contextlib.asynccontextmanager
-    async def _acquire_smtp_client(self) -> AsyncIterator[SMTPClient]:
+    async def _acquire_smtp_client(
+        self, *, reuse: bool = True
+    ) -> AsyncIterator[tuple[SMTPClient, bool]]:
+        """A connected client and whether it is a pooled session that was already open.
+
+        ``reuse=False`` skips the pool and opens a new connection.
+        """
         if self._custom_smtp_client is not None:
             client = self._custom_smtp_client
             await self._ensure_connected(client)
-            yield client
+            yield client, False
             return
 
         if self._in_context and self._pool is not None:
-            client = self._get_pooled_or_new_client()
+            pooled = self._take_pooled_client() if reuse else None
+            client = pooled if pooled is not None else self._get_smtp_connection()
+            reused = pooled is not None and pooled.is_connected
             keep_client = True
             try:
                 await self._ensure_connected(client)
-                yield client
+                yield client, reused
             except BaseException:
                 # Any failure may leave the session mid-transaction: never reuse it.
                 keep_client = False
@@ -389,7 +406,7 @@ class AsyncMailer:
         client = self._get_smtp_connection()
         try:
             await self._ensure_connected(client)
-            yield client
+            yield client, False
         finally:
             await self._close_client(client)
 
@@ -402,19 +419,31 @@ class AsyncMailer:
     async def deliver(self, data: bytes, recipients: Sequence[str]) -> dict[str, RecipientResult]:
         """Send stored message bytes to ``recipients`` in one SMTP transaction.
 
-        Never retries and never raises for SMTP or network errors: every recipient gets
-        an outcome. A failure after DATA has started without a final reply is UNKNOWN.
+        Never retries a delivery and never raises for SMTP or network errors: every
+        recipient gets an outcome. A failure after DATA has started without a final reply
+        is UNKNOWN. A pooled session that the server had already closed when MAIL FROM
+        was sent is replaced by a new connection once; nothing was sent on it.
         """
-        attempt = _Attempt(tuple(recipients))
         if self.dry_run:
+            attempt = _Attempt(tuple(recipients))
             logger.info(f"[DRY-RUN] Would deliver a stored message to {list(recipients)}")
             attempt.finish_remaining(Outcome.ACCEPTED, None, "dry run")
             return attempt.results
         sender = envelope_sender(data, fallback=self.settings.smtp_user or "")
+        return await self._attempt(sender, data, recipients, reuse=True)
+
+    async def _attempt(
+        self, sender: str, data: bytes, recipients: Sequence[str], *, reuse: bool
+    ) -> dict[str, RecipientResult]:
+        attempt = _Attempt(tuple(recipients))
+        reused = False
         try:
-            async with self._acquire_smtp_client() as client:
+            async with self._acquire_smtp_client(reuse=reuse) as (client, reused):
                 await self._transact(client, sender, data, attempt)
         except (aiosmtplib.SMTPException, OSError) as exc:
+            if reused and attempt.phase == "mail" and _closed_session(exc):
+                logger.info(f"Pooled SMTP session was closed by the server ({exc}); reconnecting.")
+                return await self._attempt(sender, data, recipients, reuse=False)
             attempt.fail(exc)
         return attempt.results
 
