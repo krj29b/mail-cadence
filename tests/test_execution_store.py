@@ -507,6 +507,49 @@ def test_expired_owner_with_attempt_in_flight_blocks_a_new_window(
     assert _execution_state(repo, old.execution_id) == "NEEDS_REVIEW"
 
 
+def test_late_result_is_kept_as_evidence_without_changing_state(
+    repo: DatabaseRepository, clock: FakeClock
+) -> None:
+    old = _claim(repo, "owner-1")
+    attempt = repo.start_attempt(old)
+    assert attempt is not None
+    clock.advance(seconds=DEFAULT_LEASE.total_seconds() + 1)
+    assert repo.recover_abandoned() == [old.execution_id]
+    with pytest.raises(StaleClaimError):
+        repo.record_attempt_result(old, attempt, {A: OK})
+
+    assert repo.record_late_result(old, attempt, {A: OK}) is True
+
+    assert _recipients(repo, old.execution_id) == {A: ("UNKNOWN", 1), B: ("UNKNOWN", 1)}
+    event = repo.conn.execute(
+        "SELECT attempt_id, actor, details_json FROM execution_events WHERE kind = 'late_result'"
+    ).fetchone()
+    assert tuple(event) == (
+        attempt.attempt_id,
+        "owner-1",
+        json.dumps({A: "ACCEPTED 250", B: "no reply"}, sort_keys=True),
+    )
+
+
+def test_late_result_needs_a_recovered_attempt_of_the_same_claim(
+    repo: DatabaseRepository, clock: FakeClock
+) -> None:
+    claim = _claim(repo, "owner-1")
+    attempt = repo.start_attempt(claim)
+    assert attempt is not None
+    assert repo.record_late_result(claim, attempt, {A: OK}) is False, "still in flight"
+    clock.advance(seconds=DEFAULT_LEASE.total_seconds() + 1)
+    repo.recover_abandoned()
+    other = Claim(claim.execution_id, claim.task_uid, claim.task_version, "owner-9", 7)
+    assert repo.record_late_result(other, attempt, {A: OK}) is False, "another token"
+    assert (
+        repo.conn.execute(
+            "SELECT COUNT(*) FROM execution_events WHERE kind = 'late_result'"
+        ).fetchone()[0]
+        == 0
+    )
+
+
 def test_dry_run_preview_sees_an_attempt_left_in_flight(
     repo: DatabaseRepository, clock: FakeClock
 ) -> None:

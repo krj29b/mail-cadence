@@ -113,7 +113,7 @@ New tables (exact SQL is part of stage 2):
 
 - A public repository method opens either `with self.conn:` (existing methods) or `with self._write_transaction():` (claim and state changes), never both, never nested. AGENTS.md section 2 is amended accordingly.
 - No transaction is open during SMTP, backoff, a semaphore or a rate-limiter wait (I8). `test_t18_*` (stage 3) proves it with a write from another process during a held SMTP session.
-- `pipeline.py` and `web.py` use only public repository methods: `claim_execution`, `start_attempt`, `record_attempt_result`, `heartbeat`, `recover_abandoned`, `resolve_unknown`.
+- `pipeline.py` and `web.py` use only public repository methods: `claim_execution`, `start_attempt`, `record_attempt_result`, `record_late_result`, `heartbeat`, `recover_abandoned`, `resolve_unknown`.
 
 **Claim in a batch.** Inside one immediate transaction: insert the execution or find the existing one for the key; take ownership if it is unowned or its lease has expired and no attempt has started. A conflict on the partial index means another worker owns the task: the batch logs the task as `SKIPPED_BUSY` and continues. That is not an error of the batch (D11).
 
@@ -125,6 +125,8 @@ New tables (exact SQL is part of stage 2):
 - An expired lease with no attempt started: the execution can be taken over.
 - An expired lease with an attempt `IN_FLIGHT`: recovery moves those recipients to `UNKNOWN` and the execution to `NEEDS_REVIEW`. There is no automatic resend. Fencing protects the database, not the old SMTP connection.
 - A wall-clock jump can expire a lease, but it only leads to `NEEDS_REVIEW`, never to a resend.
+
+*Amended after the re-verification of 2026-10-27 (finding A2):* the recovery above used to free the task identity, so a new window occurrence, a new generation or a manual send could start a transmission while the old worker might still hold its SMTP session. Since the A1 change (D12) the recovered `UNKNOWN` recipients block every new execution of the task until an operator decides, and `IN_FLIGHT` recipients block it even before recovery. A worker whose attempt was recovered before it stored the result gets `StaleClaimError` as before; the pipeline then calls `record_late_result`, which writes the replies as a `late_result` event (actor = the old owner) without changing any state. The event is evidence for the operator: it shows what the server answered and that the old worker finished the attempt; accepting it is still an operator decision through `resolve_unknown`. Test: `test_frozen_worker_blocks_new_windows_manual_sends_and_resets` (worker held after the body, lease expired, next day, manual send and reset: one SMTP session in total, the late replies recorded).
 
 ### D9. Recipient states and the retry budget
 

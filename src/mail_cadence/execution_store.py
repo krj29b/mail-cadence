@@ -592,6 +592,42 @@ class ExecutionStoreMixin:
                 ),
             )
 
+    def record_late_result(
+        self, claim: Claim, attempt: Attempt, results: Mapping[str, RecipientResult]
+    ) -> bool:
+        """Keep, as evidence only, the replies a worker received after its attempt was
+        recovered as UNKNOWN (D8): one ``late_result`` event, no change of state.
+
+        The recipients stay UNKNOWN until an operator decides (D12); the event shows the
+        operator what the server answered and that the old worker finished the attempt.
+        Returns False when the attempt is not this claim's or was not recovered.
+        """
+        with self._write_transaction() as now:
+            row = self.conn.execute(
+                "SELECT state FROM delivery_attempts "
+                "WHERE attempt_id = ? AND execution_id = ? AND fencing_token = ?",
+                (attempt.attempt_id, claim.execution_id, claim.fencing_token),
+            ).fetchone()
+            if row is None or row["state"] != "UNKNOWN":
+                return False
+            replies = {r: results[r] for r in attempt.recipients if r in results}
+            self._record_event(
+                now,
+                _Event(
+                    "late_result",
+                    execution_id=claim.execution_id,
+                    attempt_id=attempt.attempt_id,
+                    actor=claim.owner,
+                    reason="reply received after the attempt was recovered; not applied",
+                    details={
+                        r: f"{res.outcome.value} {res.code or ''}".strip()
+                        for r, res in replies.items()
+                    }
+                    | {r: "no reply" for r in attempt.recipients if r not in replies},
+                ),
+            )
+            return True
+
     def _store_results(
         self,
         execution_id: int,

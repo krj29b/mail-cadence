@@ -137,7 +137,7 @@ The web panel's **Executions** page lists every execution with its task version,
 
 - **Delivered**: the server's log shows the message was accepted;
 - **Not delivered**: the log shows it was not;
-- **Send again**: the next dispatch run sends the stored message again, if the same window occurrence is still open (once it has ended, no run picks the execution up again); first make sure the worker that made the attempt is no longer running, because nothing can stop an SMTP connection it still holds. For a manual send, use the **Run** button again instead.
+- **Send again** (check the event history first: a `late_result` event shows the server's reply that a worker received after its attempt had been recovered, and that this worker has finished the attempt): the next dispatch run sends the stored message again, if the same window occurrence is still open (once it has ended, no run picks the execution up again); first make sure the worker that made the attempt is no longer running, because nothing can stop an SMTP connection it still holds. For a manual send, use the **Run** button again instead.
 
 Until every `UNKNOWN` recipient of an execution has a decision, the task is not sent at all: later window occurrences, a reset of the window state and the **Run** button skip it as `SKIPPED_BUSY` ("unknown outcome"), and each dispatch run that skips it exits with code `3`. A decision refers to the attempt shown on the page and is refused if a newer attempt exists. It is recorded with the panel user's name. The **Run** button on the Tasks page sends a task once per page load: clicking again reports the same send; reload the page to send it again.
 

@@ -17,7 +17,7 @@ import socket
 import sqlite3
 import time
 import uuid
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import AsyncIterator, Iterable, Mapping
 from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -27,6 +27,7 @@ from pydantic import ValidationError
 
 from mail_cadence.database import get_connection, init_db
 from mail_cadence.execution_store import (
+    Attempt,
     Claim,
     ClaimRequest,
     ClaimResult,
@@ -46,6 +47,7 @@ from mail_cadence.models import (
     BatchSummaryReport,
     MailConfiguration,
     MailTask,
+    RecipientResult,
     Settings,
     TaskExecutionResult,
     TaskExecutionStatus,
@@ -430,10 +432,32 @@ async def _drive(
             await asyncio.sleep(max(0.0, (due - datetime.now(UTC)).total_seconds()))
             continue
         results = await mailer.deliver(data, attempt.recipients)
-        repo.record_attempt_result(claim, attempt, results)
+        _store_results(repo, claim, attempt, results)
     if data is not None:
         repo.release_execution(claim)
     return repo.execution_outcome(claim.execution_id)
+
+
+def _store_results(
+    repo: DatabaseRepository,
+    claim: Claim,
+    attempt: Attempt,
+    results: Mapping[str, RecipientResult],
+) -> None:
+    """Store the replies; if the attempt was recovered meanwhile, keep them as evidence."""
+    try:
+        repo.record_attempt_result(claim, attempt, results)
+    except StaleClaimError:
+        try:
+            if repo.record_late_result(claim, attempt, results):
+                logger.warning(
+                    f"Execution {claim.execution_id}: attempt {attempt.attempt_id} was "
+                    "recovered before its result was stored; the replies are kept as "
+                    "evidence for the operator's review."
+                )
+        except sqlite3.Error as exc:
+            logger.error(f"Could not keep the late result of execution {claim.execution_id}: {exc}")
+        raise
 
 
 def _message_for(repo: DatabaseRepository, mailer: AsyncMailer, claim: Claim) -> bytes | None:

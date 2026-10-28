@@ -13,6 +13,7 @@ The passage of a lease (5 minutes) is simulated by moving lease_expires_at into 
 
 import asyncio
 import contextlib
+import json
 import sqlite3
 import threading
 from collections.abc import Iterator
@@ -31,12 +32,14 @@ from mail_cadence.models import (
     Recipients,
     Schedule,
     Settings,
+    TaskExecutionStatus,
     WorkSchedules,
 )
 from mail_cadence.pipeline import (
     EXIT_OK,
     EXIT_UNKNOWN,
     DispatchOptions,
+    dispatch_single_task,
     run_dispatch,
 )
 from mail_cadence.repository import DatabaseRepository
@@ -229,6 +232,41 @@ def test_frozen_worker_is_superseded_without_a_parallel_send(
     assert codes == [EXIT_UNKNOWN], "the late result of the old worker is refused"
     assert _recipients(db_path) == {A: "UNKNOWN", B: "UNKNOWN"}
     assert len(sink.deliveries) == 1
+
+
+def test_frozen_worker_blocks_new_windows_manual_sends_and_resets(
+    tmp_path: Path, sink: SMTPSink
+) -> None:
+    """Audit A2: an expired lease does not prove that the old SMTP session has ended.
+    While the old worker is held after the body, no other execution of the task may
+    start a transmission; its late replies are kept only as evidence."""
+    db_path = _prepare(tmp_path)
+    settings = _settings(sink.port)
+    worker, codes = _held_worker(db_path, sink)
+    try:
+        _expire_leases(db_path)
+        next_day = DispatchOptions(
+            db_path=db_path, template_dir=tmp_path, ref_dt=REF_DT + timedelta(days=1)
+        )
+        assert asyncio.run(run_dispatch(next_day, settings)) == EXIT_UNKNOWN
+        manual = asyncio.run(
+            dispatch_single_task(db_path, "T1", settings, tmp_path, idempotency_key="click-1")
+        )
+        assert manual.status == TaskExecutionStatus.SKIPPED_BUSY
+        with closing(get_connection(db_path)) as conn:
+            assert DatabaseRepository(conn).reset_task_window_state("T1") is True
+        assert _run(db_path, sink.port) == EXIT_UNKNOWN
+        assert _mail_commands(sink) == 1, "only the old worker's session"
+    finally:
+        sink.release()
+        worker.join(PROCESS_TIMEOUT)
+
+    assert codes == [EXIT_UNKNOWN]
+    assert len(sink.deliveries) == 1
+    assert _query(db_path, "SELECT COUNT(*) FROM task_executions") == [(1,)]
+    assert _recipients(db_path) == {A: "UNKNOWN", B: "UNKNOWN"}
+    late = _query(db_path, "SELECT details_json FROM execution_events WHERE kind = 'late_result'")
+    assert late == [(json.dumps({A: "ACCEPTED 250", B: "ACCEPTED 250"}, sort_keys=True),)]
 
 
 def test_database_error_after_smtp_is_never_a_success(
