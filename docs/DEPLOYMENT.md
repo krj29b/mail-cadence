@@ -42,7 +42,7 @@ sudo install -m 0644 deploy/systemd/mail-cadence-*.service deploy/systemd/mail-c
 sudo systemctl daemon-reload
 ```
 
-The SMTP settings in the environment file must use TLS or STARTTLS when a password is set (see `SMTP_ALLOW_INSECURE_AUTH` in the README); otherwise every run stops with exit code `1`.
+The SMTP settings in the environment file must use TLS or STARTTLS when a password is set (see `SMTP_ALLOW_INSECURE_AUTH` in [CONFIGURATION.md](CONFIGURATION.md)); otherwise every run stops with exit code `1`.
 
 ## Load tasks and schedules
 
@@ -123,4 +123,4 @@ sudo systemctl start mail-cadence-web.service mail-cadence-dispatch.timer
 
 Upgrading to the release with durable execution state (schema version 6, ADR 0001): stop the timer and the web panel first, so that no run of the old version sends while the new one claims tasks, take the backup above, then start the new version. Migration 6 turns the old `last_run`/`last_status` into executions: a task sent in the current window stays blocked for that window; a task that failed or was delivered partially is marked for review (exit code `3` until the window ends). Rolling back to the backup forgets everything sent after it; check the SMTP server's log before sending again.
 
-The first start of a new version migrates the database in place (see "Database Upgrades" in the README); a database written by a newer version is refused. Use `sqlite3 .backup` (or stop the services first) rather than copying the file, so the WAL contents are included.
+The first start of a new version migrates the database in place (see "Database Upgrades" in [CONFIGURATION.md](CONFIGURATION.md#database-upgrades)); a database written by a newer version is refused. Use `sqlite3 .backup` (or stop the services first) rather than copying the file, so the WAL contents are included.

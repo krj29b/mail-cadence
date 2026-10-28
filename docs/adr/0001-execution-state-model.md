@@ -175,7 +175,7 @@ Every choice writes an event. Secrets are never shown.
 
 ### D13. Dry run
 
-A dry run never writes `task_executions`, `execution_recipients`, `delivery_attempts` or `report_deliveries`. It reads them to report what would happen: send, busy or blocked. Its logs carry `dry_run = 1`, and the report is only logged, never sent. Importing XML together with `--dry-run` still changes the configuration; README states that the import is not part of the simulation.
+A dry run never writes `task_executions`, `execution_recipients`, `delivery_attempts` or `report_deliveries`. It reads them to report what would happen: send, busy or blocked. Its logs carry `dry_run = 1`, and the report is only logged, never sent. Importing XML together with `--dry-run` still changes the configuration; `docs/CLI.md` states that the import is not part of the simulation.
 
 ### D14. Status report
 
