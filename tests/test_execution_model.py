@@ -81,6 +81,7 @@ class MRecipient:
     attempts: int = 0
     next_at: float | None = None
     budget: int = MAX_RETRIES + 1  # an operator's RETRY adds a fresh budget
+    last_attempt: int | None = None  # the attempt id a decision must name (D12)
 
 
 @dataclass
@@ -238,6 +239,7 @@ class Model:
         for addr in due:
             r = e.recipients[addr]
             r.state, r.attempts, r.next_at = "IN_FLIGHT", r.attempts + 1, None
+            r.last_attempt = self.next_attempt_id
         e.in_flight[self.next_attempt_id] = claim.fencing_token
         e.state = "ACTIVE"
         self.next_attempt_id += 1
@@ -452,10 +454,17 @@ class ExecutionMachine(RuleBasedStateMachine):
             return
         execution_id, address = data.draw(st.sampled_from(unknown))
         resolution = data.draw(st.sampled_from(list(Resolution)))
+        attempt_id = self.model.executions[execution_id].recipients[address].last_attempt
+        assert attempt_id is not None, "an UNKNOWN recipient always has an attempt"
         expected = self.model.resolve(execution_id, address, resolution)
         try:
             state = self.repo.resolve_unknown(
-                execution_id, address, resolution, actor="operator", reason="checked"
+                execution_id,
+                address,
+                resolution,
+                actor="operator",
+                reason="checked",
+                attempt_id=attempt_id,
             )
         except ExecutionBusyError:
             assert isinstance(expected, ExecutionBusyError)

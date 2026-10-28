@@ -1052,13 +1052,16 @@ async def resolve_execution_recipient(
     recipient = str(form.get("recipient", ""))
     try:
         attempt_raw = str(form.get("attempt_id", "")).strip()
+        if not attempt_raw:
+            msg = "The attempt id is required; reload the execution page"
+            raise ValueError(msg)
         state = repo.resolve_unknown(
             execution_id,
             recipient,
             Resolution(str(form.get("resolution", ""))),
             actor=_panel_actor(request),
             reason=str(form.get("reason", "")),
-            attempt_id=int(attempt_raw) if attempt_raw else None,
+            attempt_id=int(attempt_raw),
         )
     except ExecutionBusyError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc

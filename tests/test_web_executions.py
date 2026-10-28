@@ -132,6 +132,8 @@ def test_operator_resolves_unknown_recipients(client: TestClient, db_path: Path)
         {"resolution": "maybe"},
         {"attempt_id": "99"},
         {"attempt_id": "x"},
+        {"attempt_id": ""},
+        {"attempt_id": "  "},
         {"recipient": "nobody@example.com"},
     ],
 )
@@ -140,6 +142,23 @@ def test_invalid_decisions_are_rejected_without_changes(
 ) -> None:
     assert _resolve(client, **form) == 400
     assert _recipient_state(db_path, A) == "UNKNOWN"
+
+
+def test_decision_without_the_attempt_id_field_is_rejected(
+    client: TestClient, db_path: Path
+) -> None:
+    resp = client.post(
+        "/executions/1/resolve",
+        data={"recipient": A, "resolution": "accepted", "reason": "server log"},
+    )
+    assert resp.status_code == 400
+    assert "attempt id is required" in resp.text
+    assert _recipient_state(db_path, A) == "UNKNOWN"
+    with closing(sqlite3.connect(db_path)) as conn:
+        decisions = conn.execute(
+            "SELECT COUNT(*) FROM execution_events WHERE kind = 'unknown_resolved'"
+        ).fetchone()[0]
+    assert decisions == 0
 
 
 def test_unknown_execution_is_404(client: TestClient) -> None:

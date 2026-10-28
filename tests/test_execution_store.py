@@ -417,16 +417,34 @@ def _needs_review(repo: DatabaseRepository) -> Claim:
     return claim
 
 
+def _latest_attempt(repo: DatabaseRepository, execution_id: int, recipient: str) -> int:
+    """The attempt id the panel shows next to the recipient."""
+    rows = repo.conn.execute(
+        "SELECT attempt_id, recipients_json FROM delivery_attempts WHERE execution_id = ? "
+        "ORDER BY attempt_no",
+        (execution_id,),
+    ).fetchall()
+    return [int(r["attempt_id"]) for r in rows if recipient in json.loads(r["recipients_json"])][-1]
+
+
+def _decide(
+    repo: DatabaseRepository, execution_id: int, recipient: str, resolution: Resolution, reason: str
+) -> str:
+    return repo.resolve_unknown(
+        execution_id,
+        recipient,
+        resolution,
+        actor="op",
+        reason=reason,
+        attempt_id=_latest_attempt(repo, execution_id, recipient),
+    )
+
+
 def test_resolving_unknown_recipients(repo: DatabaseRepository, clock: FakeClock) -> None:
     claim = _needs_review(repo)
-    resolve = repo.resolve_unknown
 
-    assert resolve(claim.execution_id, A, Resolution.ACCEPTED, actor="op", reason="log") == (
-        "NEEDS_REVIEW"
-    )
-    assert resolve(claim.execution_id, B, Resolution.RETRY, actor="op", reason="stopped") == (
-        "RETRY_WAIT"
-    )
+    assert _decide(repo, claim.execution_id, A, Resolution.ACCEPTED, "log") == "NEEDS_REVIEW"
+    assert _decide(repo, claim.execution_id, B, Resolution.RETRY, "stopped") == "RETRY_WAIT"
     retry = _claim(repo, "owner-2")
     attempt = repo.start_attempt(retry)
     assert attempt is not None
@@ -442,17 +460,110 @@ def test_resolving_unknown_recipients(repo: DatabaseRepository, clock: FakeClock
 def test_resolution_is_refused_when_not_allowed(repo: DatabaseRepository, clock: FakeClock) -> None:
     claim = _needs_review(repo)
     with pytest.raises(ValueError, match="reason"):
-        repo.resolve_unknown(claim.execution_id, A, Resolution.FAILED, actor="op", reason=" ")
-    repo.resolve_unknown(claim.execution_id, A, Resolution.FAILED, actor="op", reason="bounce")
+        _decide(repo, claim.execution_id, A, Resolution.FAILED, " ")
+    _decide(repo, claim.execution_id, A, Resolution.FAILED, "bounce")
     with pytest.raises(ValueError, match="not UNKNOWN"):
-        repo.resolve_unknown(claim.execution_id, A, Resolution.RETRY, actor="op", reason="again")
+        _decide(repo, claim.execution_id, A, Resolution.RETRY, "again")
     assert _recipients(repo, claim.execution_id)[A] == ("PERMANENT_FAILURE", 1)
 
-    repo.resolve_unknown(claim.execution_id, B, Resolution.RETRY, actor="op", reason="stopped")
+    _decide(repo, claim.execution_id, B, Resolution.RETRY, "stopped")
     active = _claim(repo, "owner-2")
     assert repo.start_attempt(active) is not None
     with pytest.raises(ExecutionBusyError):
-        repo.resolve_unknown(claim.execution_id, B, Resolution.FAILED, actor="op", reason="x")
+        _decide(repo, claim.execution_id, B, Resolution.FAILED, "x")
+
+
+def _review_snapshot(repo: DatabaseRepository) -> list[tuple[object, ...]]:
+    """Everything a decision could change."""
+    return [
+        tuple(r)
+        for r in repo.conn.execute(
+            "SELECT 'r', execution_id, envelope_address, state, max_attempts "
+            "FROM execution_recipients UNION ALL "
+            "SELECT 'e', execution_id, state, owner, finished_at FROM task_executions "
+            "UNION ALL SELECT 'v', event_id, kind, NULL, NULL FROM execution_events "
+            "ORDER BY 1, 2, 3"
+        )
+    ]
+
+
+def test_decision_without_an_attempt_id_is_refused(repo: DatabaseRepository) -> None:
+    claim = _needs_review(repo)
+    before = _review_snapshot(repo)
+    with pytest.raises(TypeError, match="attempt_id"):
+        repo.resolve_unknown(  # type: ignore[call-arg]
+            claim.execution_id, A, Resolution.ACCEPTED, actor="op", reason="log"
+        )
+    assert _review_snapshot(repo) == before
+
+
+def test_decision_on_an_older_attempt_is_refused_without_changes(
+    repo: DatabaseRepository, clock: FakeClock
+) -> None:
+    """B is retried after a first unknown outcome; a decision based on the first attempt
+    must not settle the second one."""
+    claim = _needs_review(repo)
+    first = _latest_attempt(repo, claim.execution_id, B)
+    _decide(repo, claim.execution_id, A, Resolution.ACCEPTED, "log")
+    _decide(repo, claim.execution_id, B, Resolution.RETRY, "stopped")
+    retry = _claim(repo, "owner-2")
+    attempt = repo.start_attempt(retry)
+    assert attempt is not None
+    repo.record_attempt_result(retry, attempt, {})
+    repo.release_execution(retry)
+    assert _latest_attempt(repo, claim.execution_id, B) != first
+
+    before = _review_snapshot(repo)
+    with pytest.raises(ValueError, match="not the latest attempt"):
+        repo.resolve_unknown(
+            claim.execution_id, B, Resolution.ACCEPTED, actor="op", reason="old", attempt_id=first
+        )
+    assert _review_snapshot(repo) == before
+
+
+def test_decision_with_an_attempt_of_another_execution_is_refused(
+    repo: DatabaseRepository,
+) -> None:
+    repo.save_single_task(_task("T2"))
+    claim = _needs_review(repo)
+    other = _claim(repo, "owner-2", task_id="T2")
+    other_attempt = repo.start_attempt(other)
+    assert other_attempt is not None
+    repo.record_attempt_result(other, other_attempt, {A: OK, B: OK})
+    repo.release_execution(other)
+
+    before = _review_snapshot(repo)
+    with pytest.raises(ValueError, match="not the latest attempt"):
+        repo.resolve_unknown(
+            claim.execution_id,
+            A,
+            Resolution.ACCEPTED,
+            actor="op",
+            reason="wrong page",
+            attempt_id=other_attempt.attempt_id,
+        )
+    assert _review_snapshot(repo) == before
+
+
+def test_refused_decision_leaves_an_expired_owner_unsettled(
+    repo: DatabaseRepository, clock: FakeClock
+) -> None:
+    """The recovery inside resolve_unknown is part of the refused transaction."""
+    claim = _claim(repo)
+    attempt = repo.start_attempt(claim)
+    assert attempt is not None
+    clock.advance(seconds=DEFAULT_LEASE.total_seconds() + 1)
+    before = _review_snapshot(repo)
+    with pytest.raises(ValueError, match="not the latest attempt"):
+        repo.resolve_unknown(
+            claim.execution_id,
+            A,
+            Resolution.FAILED,
+            actor="op",
+            reason="x",
+            attempt_id=attempt.attempt_id + 100,
+        )
+    assert _review_snapshot(repo) == before
 
 
 # --- An unresolved UNKNOWN blocks every new execution of the task (D12, audit A1) -------
@@ -480,9 +591,9 @@ def test_unknown_outcome_blocks_manual_sends_new_windows_and_generations(
 
 def test_resolving_every_unknown_recipient_unblocks_the_task(repo: DatabaseRepository) -> None:
     claim = _needs_review(repo)
-    repo.resolve_unknown(claim.execution_id, A, Resolution.ACCEPTED, actor="op", reason="log")
+    _decide(repo, claim.execution_id, A, Resolution.ACCEPTED, "log")
     assert _claim_status(repo, "manual:click-1")[0] == ClaimStatus.REVIEW, "B is still UNKNOWN"
-    repo.resolve_unknown(claim.execution_id, B, Resolution.FAILED, actor="op", reason="bounce")
+    _decide(repo, claim.execution_id, B, Resolution.FAILED, "bounce")
     assert _claim_status(repo, "manual:click-1")[0] == ClaimStatus.CLAIMED
 
 

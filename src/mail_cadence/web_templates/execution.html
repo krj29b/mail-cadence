@@ -48,10 +48,10 @@
         <td class="py-3 px-4 font-mono text-slate-400">{{ r.attempt_count }} / {{ r.max_attempts }}</td>
         <td class="py-3 px-4 font-mono text-slate-400">{% if r.last_code %}{{ r.last_code }} {% endif %}{{ r.last_error or "" }}</td>
         <td class="py-3 px-4">
-          {% if r.state == 'UNKNOWN' %}
+          {% if r.state == 'UNKNOWN' and r.last_attempt_id %}
           <form action="/executions/{{ execution.execution_id }}/resolve" method="POST" class="flex flex-wrap items-center gap-2">
             <input type="hidden" name="recipient" value="{{ r.envelope_address }}">
-            <input type="hidden" name="attempt_id" value="{{ r.last_attempt_id or '' }}">
+            <input type="hidden" name="attempt_id" value="{{ r.last_attempt_id }}">
             <select name="resolution" class="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200">
               <option value="accepted">Delivered (server log shows it)</option>
               <option value="failed">Not delivered</option>
@@ -61,7 +61,7 @@
                    class="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200 w-56">
             <button type="submit" class="inline-flex items-center gap-1 bg-slate-800 hover:bg-slate-700 text-amber-400 border border-slate-700 px-2 py-1 rounded text-xs">
               <i data-lucide="check-circle-2" class="w-3 h-3"></i>
-              <span>Resolve (attempt #{{ r.last_attempt_id or "?" }})</span>
+              <span>Resolve (attempt #{{ r.last_attempt_id }})</span>
             </button>
           </form>
           {% endif %}

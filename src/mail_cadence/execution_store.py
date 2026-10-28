@@ -798,13 +798,14 @@ class ExecutionStoreMixin:
         *,
         actor: str,
         reason: str,
-        attempt_id: int | None = None,
+        attempt_id: int,
     ) -> str:
         """Resolve an UNKNOWN recipient (D12) and return the execution's new state.
 
         RETRY gives the recipient a fresh attempt budget; the operator must have made
-        sure that the old worker is stopped. ``attempt_id`` is the attempt the operator
-        looked at; if it is not the recipient's latest attempt, the decision is refused.
+        sure that the old worker is stopped. ``attempt_id`` is required: the attempt the
+        operator looked at. If it is not the recipient's latest attempt in this execution
+        (an older one, or one of another execution), the decision is refused.
         Raises ExecutionBusyError while a live owner holds the execution, ValueError for
         a missing reason, a stale attempt or a recipient that is not UNKNOWN.
         """
@@ -824,8 +825,7 @@ class ExecutionStoreMixin:
                     raise ExecutionBusyError(msg)
                 self._settle(execution_id, now, "lease_expired")
             key = envelope_address(recipient)
-            if attempt_id is not None:
-                self._check_latest_attempt(execution_id, key, attempt_id)
+            self._check_latest_attempt(execution_id, key, attempt_id)
             self._apply_resolution(row, key, resolution, now)
             self._record_event(
                 now,
