@@ -200,3 +200,62 @@ def test_delete_schedule_referenced_by_task_raises_integrity_error(
 
     with pytest.raises(pytest.importorskip("sqlite3").IntegrityError):
         repo.delete_schedule("SCHED-REF")
+
+
+def test_delete_schedule_recreation_increments_version(repo: DatabaseRepository) -> None:
+    sched = Schedule(
+        id="SCHED-V",
+        description="Initial Schedule",
+        allowed_hours=[HourWindow(start="08:00", end="12:00")],
+    )
+    repo.save_single_schedule(sched)
+    assert repo.get_schedule_versions()["SCHED-V"] == 1
+
+    assert repo.delete_schedule("SCHED-V") is True
+    assert repo.schedule_exists("SCHED-V") is False
+    assert repo.get_schedule_versions()["SCHED-V"] == 1
+
+    recreated_sched = Schedule(
+        id="SCHED-V",
+        description="Recreated Schedule",
+        allowed_hours=[HourWindow(start="10:00", end="16:00")],
+    )
+    repo.save_single_schedule(recreated_sched)
+    assert repo.schedule_exists("SCHED-V") is True
+    assert repo.get_schedule_versions()["SCHED-V"] == 2
+
+
+def test_delete_schedule_cascades_multiple_hour_windows_and_updates_work_schedules(
+    repo: DatabaseRepository,
+) -> None:
+    sched_a = Schedule(
+        id="SCHED-MULTI",
+        description="Multi Window Schedule",
+        allowed_hours=[
+            HourWindow(start="08:00", end="12:00", days_of_week="mon,tue,wed"),
+            HourWindow(start="14:00", end="18:00", days_of_week="thu,fri"),
+        ],
+    )
+    sched_b = Schedule(
+        id="SCHED-KEEP",
+        description="Keep Schedule",
+        allowed_hours=[HourWindow(start="00:00", end="24:00")],
+    )
+    repo.save_single_schedule(sched_a)
+    repo.save_single_schedule(sched_b)
+
+    hw_count = repo.conn.execute(
+        "SELECT COUNT(*) FROM hour_windows WHERE schedule_id = 'SCHED-MULTI'"
+    ).fetchone()[0]
+    assert hw_count == 2
+
+    assert repo.delete_schedule("SCHED-MULTI") is True
+    assert repo.schedule_exists("SCHED-MULTI") is False
+
+    hw_count_after = repo.conn.execute(
+        "SELECT COUNT(*) FROM hour_windows WHERE schedule_id = 'SCHED-MULTI'"
+    ).fetchone()[0]
+    assert hw_count_after == 0
+
+    schedules = repo.get_work_schedules().schedules
+    assert [s.id for s in schedules] == ["SCHED-KEEP"]
