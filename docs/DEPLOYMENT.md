@@ -112,6 +112,24 @@ systemd-analyze security mail-cadence-web.service mail-cadence-dispatch.service
 
 If a later dependency needs something these settings block (for example writable and executable memory), the service fails at start with a clear error in `journalctl`; relax only that one setting in a drop-in (`systemctl edit mail-cadence-web.service`) rather than editing the shipped unit.
 
+## Hosts without a hardware clock (Raspberry Pi)
+
+Schedule windows and their occurrences are computed from the system clock. A host without a battery-backed clock (Raspberry Pi up to model 4, a Pi 5 without its RTC battery, some virtual machines and containers) boots with a wrong time: on Raspberry Pi OS, `fake-hwclock` restores the time of the last shutdown. A dispatch that runs before NTP has set the clock can send a task outside its window or claim a window occurrence that has not started. `Persistent=true` in the timer starts a missed run right after boot, so this happens on every restart after downtime.
+
+systemd orders timers with `OnCalendar=` after `time-sync.target`, but that target waits for an actual synchronisation only when `systemd-time-wait-sync` is enabled:
+
+```bash
+sudo systemctl enable systemd-time-wait-sync.service
+timedatectl show -p NTPSynchronized   # NTPSynchronized=yes once the clock is set
+```
+
+Further notes for a Raspberry Pi:
+
+- **Operating system:** a 64-bit (aarch64) Raspberry Pi OS based on Debian 13 (Trixie) ships Python 3.13. Debian 12 (Bookworm) has Python 3.11, which is too old; install Python 3.12+ separately (for example with `uv`). On 32-bit ARM some dependencies (`pydantic-core`) may have no prebuilt wheel and need a Rust build.
+- **Storage:** the delivery guarantees rely on SQLite's `fsync` reaching the disk. Keep `/var/lib/mail-cadence` on an SSD (USB or NVMe) or a good A2-class card, and use a UPS or a power-backup HAT: a power cut during a send is the case that leaves deliveries with an unknown outcome to review. Back up as described in [Upgrades and backups](#upgrades-and-backups) to another device.
+- **SMTP:** residential connections usually block or blacklist port 25. Send through an authenticated relay on port 587 with TLS.
+- **Panel:** keep it on the local network or behind a VPN (WireGuard, Tailscale) rather than exposing it to the internet.
+
 ## Upgrades and backups
 
 ```bash

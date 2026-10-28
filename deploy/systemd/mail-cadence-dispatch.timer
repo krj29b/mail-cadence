@@ -5,6 +5,8 @@ Description=MailCadence dispatch every 10 minutes
 Documentation=https://github.com/krj29b/mail-cadence/blob/master/docs/DEPLOYMENT.md
 
 [Timer]
+# On a host without a hardware clock, enable systemd-time-wait-sync.service so that
+# runs wait for NTP (docs/DEPLOYMENT.md, "Hosts without a hardware clock").
 OnCalendar=*:0/10
 # Catch up once after downtime instead of silently skipping.
 Persistent=true
