@@ -79,6 +79,9 @@ class TokenBucketRateLimiter:
         if self.rate_limit_per_min <= 0:
             return
 
+        # The lock is held while sleeping on purpose: asyncio.Lock wakes waiters in
+        # FIFO order, so tokens go out in request order instead of every waiter
+        # waking for the same token.
         async with self._lock:
             while True:
                 now = time_module.monotonic()

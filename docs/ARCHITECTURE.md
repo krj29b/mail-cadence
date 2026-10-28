@@ -344,8 +344,10 @@ Duplicate dispatches are prevented by durable execution state ([ADR 0001](adr/00
 
 `TokenBucketRateLimiter` enforces rate limits per minute using `time.monotonic()`:
 
-- **Token Bucket Refill**: Tokens fill continuously at rate `rate_limit_per_min / 60.0` tokens/sec up to capacity `rate_limit_per_min`.
-- **Resource Key Sharing**: The pipeline (`pipeline._partition_eligible_tasks`) groups concurrency semaphores (`asyncio.Semaphore(window.max_concurrency)`) and rate limiters using a composite key: `(schedule_ref, window.start, window.end)`. All tasks sharing the same schedule window share the exact same semaphore and token bucket instance.
+- **Token Bucket Refill**: Tokens fill continuously at rate `rate_limit_per_min / 60.0` tokens/sec up to capacity `rate_limit_per_min`. A window starts with `max_concurrency` tokens, so its first burst is no larger than its concurrency.
+- **Waiting**: `acquire()` holds its lock while it sleeps for the next token. `asyncio.Lock` wakes waiters in FIFO order, so tasks get tokens in the order they asked; releasing the lock during the sleep would wake every waiter for the same token.
+- **Resource Key Sharing**: `pipeline._window_controls` creates one semaphore (`asyncio.Semaphore(window.max_concurrency)`) and one rate limiter per window occurrence, keyed by `WindowInstance.key` (schedule id and the UTC instant the occurrence starts). All tasks claimed for the same occurrence share them. Dry runs use neither: they render messages without waiting.
+- **Scope**: Limits apply per window occurrence and per process (ADR 0001, D18). Two processes dispatching at the same time (CLI, timer, panel) each have their own limiter, so together they can exceed `rate_limit_per_min` and `max_concurrency` for the SMTP account; the execution claim still prevents them from sending the same task twice.
 
 ---
 
@@ -469,7 +471,7 @@ stateDiagram-v2
 
 ### 6. Web Panel Access Control
 - Without `ADMIN_USER` and `ADMIN_PASSWORD` every request is refused with `503`. `mail-cadence serve --insecure-no-auth` opts out, and is only accepted with a loopback `--host`.
-- State-changing requests (`POST`, `PUT`, `PATCH`, `DELETE`) are rejected with `403` when `Sec-Fetch-Site` is not `same-origin`/`none` or when `Origin` does not match `Host` (CSRF protection for Basic Auth).
+- State-changing requests (`POST`, `PUT`, `PATCH`, `DELETE`) are rejected with `403` when `Sec-Fetch-Site` is not `same-origin`/`none` or when `Origin` does not match `Host` (CSRF protection for Basic Auth). A request with neither header is accepted: current browsers send at least one of them on every cross-site request that changes state, and clients that send neither (curl, scripts) are not a CSRF vector.
 - Failed logins are limited per client IP (`login_throttle.LoginThrottle`, created in `create_app` from `ADMIN_LOGIN_MAX_FAILURES` / `ADMIN_LOGIN_WINDOW_SECONDS`, default 10 per 15 minutes, sliding window). The limit is checked before the password, so a blocked client gets `429` + `Retry-After` even with the right password and cannot confirm a guess. Requests without credentials (the browser's first request) are not counted; a successful login clears the counter. State is in memory, per process, bounded to 10,000 clients. The client IP is `request.client.host`, which uvicorn takes from `X-Forwarded-For` only for trusted proxies (`FORWARDED_ALLOW_IPS`, default loopback).
 
 ### 7. Web Panel Browser Hardening (`web.py`, `web_static/`)

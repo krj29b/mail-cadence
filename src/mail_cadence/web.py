@@ -184,7 +184,10 @@ def verify_same_origin(request: Request) -> None:
     """Reject state-changing requests sent by other sites (CSRF protection).
 
     Browsers attach Basic Auth credentials automatically, so cross-site requests are
-    refused based on the ``Sec-Fetch-Site`` and ``Origin`` headers.
+    refused based on the ``Sec-Fetch-Site`` and ``Origin`` headers. A request with
+    neither header passes: current browsers send at least one on every cross-site
+    request that changes state, and clients without them (curl, scripts) cannot be
+    used for CSRF. Requiring a header would only lock those clients out.
     """
     if request.method not in _UNSAFE_METHODS:
         return
