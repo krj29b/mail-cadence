@@ -4,7 +4,7 @@
 | --- | --- | --- |
 | [CONFIGURATION.md](CONFIGURATION.md) | Everyone | Environment variables, database upgrades, rules for tasks, schedules and templates |
 | [CLI.md](CLI.md) | Everyone | Every `mail-cadence` command and option, the web panel (`serve`) and its security behaviour |
-| [OPERATIONS.md](OPERATIONS.md) | Operators | Exit codes, delivery guarantees, status report retries, retention, reviewing unknown deliveries |
+| [OPERATIONS.md](OPERATIONS.md) | Operators | Exit codes, monitoring with `mail-cadence status`, delivery guarantees, status report retries, retention, reviewing unknown deliveries |
 | [DEPLOYMENT.md](DEPLOYMENT.md) | Administrators | Production setup: systemd units, dispatch timer, nginx with HTTPS, fail2ban, backups and upgrades |
 | [PYTHON_API.md](PYTHON_API.md) | Integrators | Updating tasks and running a dispatch from Python |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Developers | Modules, database schema and ERD, XML mapping, validation rules, scheduling and dispatch internals |

@@ -14,9 +14,47 @@ This page is for the operator who runs `mail-cadence` from cron or a systemd tim
 
 Precedence when several apply: `3`, `1`, `2`, `4`. Until a window occurrence ends, every run in it reports the outcome of the task's execution in that occurrence again (`2` for an incomplete one, `3` for an unknown one), although nothing is sent again, so a monitoring alert stays on until the window is over or the execution is resolved. A task blocked by an unresolved unknown outcome makes every run report `3` until the decision is recorded.
 
+## Monitoring
+
+`mail-cadence status` reports the state of the database to Nagios, Icinga, Zabbix or a script ([options](CLI.md#5-monitoring-status)). The dispatch exit code tells the result of one run; `status` tells whether anything needs attention now, whichever run caused it, and can be checked at any time.
+
+| State (exit code) | Condition |
+| --- | --- |
+| CRITICAL (`2`) | An execution awaits operator review: a delivery has an unknown outcome and the task sends nothing until it is resolved (see [Reviewing Unknown Deliveries](#reviewing-unknown-deliveries)). |
+| CRITICAL (`2`) | No dispatch run has finished within `--critical-age` (default 2h), or none has finished yet. |
+| CRITICAL (`2`) | A status report ended with an unknown outcome within `--since` (default 24h). |
+| WARNING (`1`) | The last dispatch run finished more than `--warning-age` ago (default 30m). |
+| WARNING (`1`) | A status report waits for a retry by the next run. |
+| WARNING (`1`) | A status report was refused or used up its attempts within `--since`. |
+| WARNING (`1`) | A task execution failed, was delivered only partially, or expired at the window end within `--since`. |
+| WARNING (`1`) | A dispatch run started more than `--critical-age` ago (and within `--since`) and never finished: the process was killed or crashed. |
+| UNKNOWN (`3`) | The database cannot be read, its schema is older or newer than this version, or an option is invalid. |
+| OK (`0`) | None of the above. |
+
+Notes:
+
+- Only real dispatch runs from the CLI, a timer or the panel's batch dispatch count as runs; dry runs and the **Run** button do not. Choose `--warning-age` and `--critical-age` above the timer interval plus the longest batch.
+- A report with an unknown outcome cannot be resolved in the panel; it stops raising an alert once it is older than `--since`.
+- The check opens the database read-only. In WAL mode SQLite still needs to create or open the `-shm` and `-wal` files next to the database, so run it as the user that owns the database (e.g. `sudo -u mail-cadence`), not as a user with read access to the database file only.
+- Options it does not know are rejected by the command-line parser with exit code `2` before the check runs.
+
+Nagios or Icinga (`check_by_ssh` or NRPE on the host that stores the database):
+
+```
+command[check_mail_cadence]=/usr/bin/sudo -u mail-cadence /opt/mail-cadence/venv/bin/mail-cadence status --db /var/lib/mail-cadence/mail_cadence.db
+```
+
 ## Delivery Guarantees
 
 Before anything is sent, a run claims each task for its window occurrence in the database, so two runs (two timers, the CLI and the web panel, processes on one host sharing the database) never send the same task at the same time. The message is rendered once and stored; every retry sends the same bytes. Each recipient's outcome is stored per attempt: a recipient accepted by the server or refused with a 5xx code is never sent the message again, a 4xx code is retried within `max_retries` (counted across runs), and no attempt starts after the window ends. A message is never sent twice automatically when its outcome is unknown. These guarantees hold for processes on the host that stores the database file, which must be on a local disk: SQLite in WAL mode does not work on a network file system (NFS, SMB), so never point runs on several hosts at a shared database. They do not extend to the SMTP account as a whole: rate limits apply per window and per process.
+
+What "once" covers and what it does not:
+
+- A task is sent automatically at most once per dispatch generation and window occurrence. Saving a changed task or **Allow Resend** starts a new generation, so the task can be sent again in the same window occurrence. The **Run** button ignores the window (see [Manual Sends](#manual-sends)).
+- "Accepted" means the SMTP server accepted the message. Whether it reaches the mailbox is outside the application.
+- It is not exactly-once between the database and the SMTP server: when the connection breaks after the message was sent, the outcome is unknown and nothing is sent again until an operator decides (see [Reviewing Unknown Deliveries](#reviewing-unknown-deliveries)).
+- A message whose template cannot be rendered (missing template or variable) ends the execution without any SMTP traffic. Later runs in the same window occurrence do not retry it when the data appears; edit the task or use **Allow Resend**. Make the data and templates ready before the window opens.
+- Windows limit when automatic attempts start, not when the SMTP exchange ends. Status reports are sent at the end of a run, independent of any window.
 
 ## Status Report
 
