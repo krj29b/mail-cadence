@@ -4,7 +4,7 @@
 <!-- Top Header & Action Toolbar -->
 <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-2 border-b border-slate-800">
   <div>
-    <h1 class="text-2xl font-bold tracking-tight text-white flex items-center gap-2">
+    <h1 class="text-2xl font-bold tracking-tight text-slate-50 flex items-center gap-2">
       <i data-lucide="layout-dashboard" class="w-6 h-6 text-indigo-400"></i>
       Dashboard & Observability
     </h1>
@@ -65,7 +65,7 @@
       </div>
     </div>
     <div class="mt-4">
-      <div class="text-2xl font-bold font-mono text-white">{{ stats.total_executions }}</div>
+      <div class="text-2xl font-bold font-mono text-slate-50">{{ stats.total_executions }}</div>
       <div class="text-xs text-slate-500 mt-1 font-mono">Tasks: {{ stats.total_tasks }} | Schedules: {{ stats.total_schedules }}{% if stats.dry_run_count %} | Dry-runs: {{ stats.dry_run_count }}{% endif %}</div>
     </div>
   </div>
@@ -78,7 +78,7 @@
       </div>
     </div>
     <div class="mt-4">
-      <div class="text-2xl font-bold font-mono text-white">{{ stats.total_emails_sent }}</div>
+      <div class="text-2xl font-bold font-mono text-slate-50">{{ stats.total_emails_sent }}</div>
       <div class="text-xs text-emerald-400 mt-1 font-mono">Successful Runs: {{ stats.success_count }}</div>
     </div>
   </div>
@@ -91,7 +91,7 @@
       </div>
     </div>
     <div class="mt-4">
-      <div class="text-2xl font-bold font-mono text-white">{{ stats.failed_count }}</div>
+      <div class="text-2xl font-bold font-mono text-slate-50">{{ stats.failed_count }}</div>
       <div class="text-xs text-rose-400 mt-1 font-mono">Requires attention</div>
     </div>
   </div>
@@ -104,7 +104,7 @@
       </div>
     </div>
     <div class="mt-4">
-      <div class="text-2xl font-bold font-mono text-white">{{ stats.avg_duration_ms }} ms</div>
+      <div class="text-2xl font-bold font-mono text-slate-50">{{ stats.avg_duration_ms }} ms</div>
       <div class="text-xs text-slate-500 mt-1 font-mono">Execution latency</div>
     </div>
   </div>
@@ -115,7 +115,7 @@
   <div class="p-4 border-b border-slate-800/80 flex flex-col md:flex-row md:items-center justify-between gap-4 bg-slate-900/80">
     <div class="flex items-center gap-2">
       <i data-lucide="list-checks" class="w-4 h-4 text-indigo-400"></i>
-      <h2 class="text-sm font-semibold text-white whitespace-nowrap">Recent Execution Logs</h2>
+      <h2 class="text-sm font-semibold text-slate-50 whitespace-nowrap">Recent Execution Logs</h2>
     </div>
 
     <!-- Filter Toolbar Form -->
@@ -123,7 +123,7 @@
       <!-- Search Input -->
       <div class="relative min-w-[200px] flex-1 sm:flex-initial">
         <i data-lucide="search" class="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500"></i>
-        <input type="text" id="logs-search-input" name="q" value="{{ search_query }}" placeholder="Search task, batch ID, or error..." class="w-full bg-slate-950 border border-slate-800 rounded-lg pl-8 pr-3 py-1.5 text-xs text-white font-mono placeholder:text-slate-600 focus:outline-none focus:border-indigo-500">
+        <input type="text" id="logs-search-input" name="q" value="{{ search_query }}" placeholder="Search task, batch ID, or error..." class="w-full bg-slate-950 border border-slate-800 rounded-lg pl-8 pr-3 py-1.5 text-xs text-slate-50 font-mono placeholder:text-slate-600 focus:outline-none focus:border-indigo-500">
       </div>
 
       <!-- Status Filter Dropdown -->

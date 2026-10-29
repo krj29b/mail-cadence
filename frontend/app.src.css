@@ -16,6 +16,244 @@
   src: url("fonts/jetbrains-mono-latin-wght-normal.woff2") format("woff2-variations");
 }
 
+:root {
+  color-scheme: dark;
+
+  /* Dark theme slate palette (Tailwind default slate) */
+  --slate-50: 248 250 252;
+  --slate-100: 241 245 249;
+  --slate-200: 226 232 240;
+  --slate-300: 203 213 225;
+  --slate-400: 148 163 184;
+  --slate-500: 100 116 139;
+  --slate-600: 71 85 105;
+  --slate-700: 51 65 85;
+  --slate-800: 30 41 59;
+  --slate-900: 15 23 42;
+  --slate-950: 2 6 23;
+
+  /* Accent & status colors (dark theme) */
+  --indigo-200: 199 210 254;
+  --indigo-300: 165 180 252;
+  --indigo-400: 129 140 248;
+  --indigo-500: 99 102 241;
+  --indigo-600: 79 70 229;
+  --indigo-700: 67 56 202;
+
+  --emerald-400: 52 211 153;
+  --emerald-500: 16 185 129;
+
+  --rose-400: 251 113 133;
+  --rose-500: 244 63 94;
+
+  --amber-400: 251 191 36;
+  --amber-500: 245 158 11;
+
+  /* Alert / Badge variables */
+  --alert-success-bg: rgba(16, 185, 129, 0.1);
+  --alert-success-text: rgb(52, 211, 153);
+  --alert-success-border: rgba(16, 185, 129, 0.2);
+
+  --alert-error-bg: rgba(244, 63, 94, 0.1);
+  --alert-error-text: rgb(251, 113, 133);
+  --alert-error-border: rgba(244, 63, 94, 0.2);
+
+  --badge-success-bg: rgba(16, 185, 129, 0.1);
+  --badge-success-text: rgb(52, 211, 153);
+  --badge-success-border: rgba(16, 185, 129, 0.2);
+
+  --badge-failed-bg: rgba(244, 63, 94, 0.1);
+  --badge-failed-text: rgb(251, 113, 133);
+  --badge-failed-border: rgba(244, 63, 94, 0.2);
+
+  --badge-partial-bg: rgba(245, 158, 11, 0.1);
+  --badge-partial-text: rgb(251, 191, 36);
+  --badge-partial-border: rgba(245, 158, 11, 0.2);
+
+  --badge-skipped-bg: rgba(100, 116, 139, 0.1);
+  --badge-skipped-text: rgb(148, 163, 184);
+  --badge-skipped-border: rgba(51, 65, 85, 0.5);
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    color-scheme: light;
+
+    /* Light theme slate palette (inverted scale: 950 is lightest bg, 100/50 darkest text) */
+    --slate-950: 255 255 255;  /* Main page background: white */
+    --slate-900: 248 250 252;  /* Cards / sidebar background: slate-50 */
+    --slate-800: 241 245 249;  /* Elevated / hover elements: slate-100 */
+    --slate-700: 226 232 240;  /* Borders / subtle fills: slate-200 */
+    --slate-600: 203 213 225;  /* Darker borders: slate-300 */
+    --slate-500: 100 116 139;  /* Muted text: slate-500 */
+    --slate-400: 71 85 105;    /* Secondary text: slate-600 */
+    --slate-300: 51 65 85;     /* Body secondary text: slate-700 */
+    --slate-200: 30 41 59;     /* Body primary text: slate-800 */
+    --slate-100: 15 23 42;     /* Strong text / titles: slate-900 */
+    --slate-50: 2 6 23;        /* Darkest headings: slate-950 */
+
+    /* Accent & status colors adjusted for light backgrounds (WCAG AA) */
+    --indigo-200: 49 46 129;   /* Remapped for dark selection/accent text on light: indigo-900 */
+    --indigo-300: 67 56 202;   /* Remapped: indigo-700 */
+    --indigo-400: 79 70 229;   /* Remapped: indigo-600 */
+    --indigo-500: 99 102 241;  /* indigo-500 */
+    --indigo-600: 79 70 229;   /* indigo-600 */
+    --indigo-700: 67 56 202;   /* indigo-700 */
+
+    --emerald-400: 5 150 105;  /* Remapped: emerald-600 */
+    --emerald-500: 16 185 129;
+
+    --rose-400: 225 29 72;     /* Remapped: rose-600 */
+    --rose-500: 244 63 94;
+
+    --amber-400: 217 119 6;    /* Remapped: amber-600 */
+    --amber-500: 245 158 11;
+
+    /* Alert / Badge variables (light theme) */
+    --alert-success-bg: rgba(16, 185, 129, 0.12);
+    --alert-success-text: rgb(4, 120, 87);
+    --alert-success-border: rgba(16, 185, 129, 0.3);
+
+    --alert-error-bg: rgba(244, 63, 94, 0.12);
+    --alert-error-text: rgb(190, 18, 60);
+    --alert-error-border: rgba(244, 63, 94, 0.3);
+
+    --badge-success-bg: rgba(16, 185, 129, 0.12);
+    --badge-success-text: rgb(4, 120, 87);
+    --badge-success-border: rgba(16, 185, 129, 0.3);
+
+    --badge-failed-bg: rgba(244, 63, 94, 0.12);
+    --badge-failed-text: rgb(190, 18, 60);
+    --badge-failed-border: rgba(244, 63, 94, 0.3);
+
+    --badge-partial-bg: rgba(245, 158, 11, 0.12);
+    --badge-partial-text: rgb(180, 83, 9);
+    --badge-partial-border: rgba(245, 158, 11, 0.3);
+
+    --badge-skipped-bg: rgba(100, 116, 139, 0.12);
+    --badge-skipped-text: rgb(71, 85, 105);
+    --badge-skipped-border: rgba(148, 163, 184, 0.4);
+  }
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  /* Light theme slate palette (inverted scale: 950 is lightest bg, 100/50 darkest text) */
+  --slate-950: 255 255 255;  /* Main page background: white */
+  --slate-900: 248 250 252;  /* Cards / sidebar background: slate-50 */
+  --slate-800: 241 245 249;  /* Elevated / hover elements: slate-100 */
+  --slate-700: 226 232 240;  /* Borders / subtle fills: slate-200 */
+  --slate-600: 203 213 225;  /* Darker borders: slate-300 */
+  --slate-500: 100 116 139;  /* Muted text: slate-500 */
+  --slate-400: 71 85 105;    /* Secondary text: slate-600 */
+  --slate-300: 51 65 85;     /* Body secondary text: slate-700 */
+  --slate-200: 30 41 59;     /* Body primary text: slate-800 */
+  --slate-100: 15 23 42;     /* Strong text / titles: slate-900 */
+  --slate-50: 2 6 23;        /* Darkest headings: slate-950 */
+
+  /* Accent & status colors adjusted for light backgrounds (WCAG AA) */
+  --indigo-200: 49 46 129;   /* Remapped: indigo-900 */
+  --indigo-300: 67 56 202;   /* Remapped: indigo-700 */
+  --indigo-400: 79 70 229;   /* Remapped: indigo-600 */
+  --indigo-500: 99 102 241;  /* indigo-500 */
+  --indigo-600: 79 70 229;   /* indigo-600 */
+  --indigo-700: 67 56 202;   /* indigo-700 */
+
+  --emerald-400: 5 150 105;  /* Remapped: emerald-600 */
+  --emerald-500: 16 185 129;
+
+  --rose-400: 225 29 72;     /* Remapped: rose-600 */
+  --rose-500: 244 63 94;
+
+  --amber-400: 217 119 6;    /* Remapped: amber-600 */
+  --amber-500: 245 158 11;
+
+  /* Alert / Badge variables (light theme) */
+  --alert-success-bg: rgba(16, 185, 129, 0.12);
+  --alert-success-text: rgb(4, 120, 87);
+  --alert-success-border: rgba(16, 185, 129, 0.3);
+
+  --alert-error-bg: rgba(244, 63, 94, 0.12);
+  --alert-error-text: rgb(190, 18, 60);
+  --alert-error-border: rgba(244, 63, 94, 0.3);
+
+  --badge-success-bg: rgba(16, 185, 129, 0.12);
+  --badge-success-text: rgb(4, 120, 87);
+  --badge-success-border: rgba(16, 185, 129, 0.3);
+
+  --badge-failed-bg: rgba(244, 63, 94, 0.12);
+  --badge-failed-text: rgb(190, 18, 60);
+  --badge-failed-border: rgba(244, 63, 94, 0.3);
+
+  --badge-partial-bg: rgba(245, 158, 11, 0.12);
+  --badge-partial-text: rgb(180, 83, 9);
+  --badge-partial-border: rgba(245, 158, 11, 0.3);
+
+  --badge-skipped-bg: rgba(100, 116, 139, 0.12);
+  --badge-skipped-text: rgb(71, 85, 105);
+  --badge-skipped-border: rgba(148, 163, 184, 0.4);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  /* Dark theme slate palette */
+  --slate-50: 248 250 252;
+  --slate-100: 241 245 249;
+  --slate-200: 226 232 240;
+  --slate-300: 203 213 225;
+  --slate-400: 148 163 184;
+  --slate-500: 100 116 139;
+  --slate-600: 71 85 105;
+  --slate-700: 51 65 85;
+  --slate-800: 30 41 59;
+  --slate-900: 15 23 42;
+  --slate-950: 2 6 23;
+
+  /* Accent & status colors (dark theme) */
+  --indigo-200: 199 210 254;
+  --indigo-300: 165 180 252;
+  --indigo-400: 129 140 248;
+  --indigo-500: 99 102 241;
+  --indigo-600: 79 70 229;
+  --indigo-700: 67 56 202;
+
+  --emerald-400: 52 211 153;
+  --emerald-500: 16 185 129;
+
+  --rose-400: 251 113 133;
+  --rose-500: 244 63 94;
+
+  --amber-400: 251 191 36;
+  --amber-500: 245 158 11;
+
+  /* Alert / Badge variables */
+  --alert-success-bg: rgba(16, 185, 129, 0.1);
+  --alert-success-text: rgb(52, 211, 153);
+  --alert-success-border: rgba(16, 185, 129, 0.2);
+
+  --alert-error-bg: rgba(244, 63, 94, 0.1);
+  --alert-error-text: rgb(251, 113, 133);
+  --alert-error-border: rgba(244, 63, 94, 0.2);
+
+  --badge-success-bg: rgba(16, 185, 129, 0.1);
+  --badge-success-text: rgb(52, 211, 153);
+  --badge-success-border: rgba(16, 185, 129, 0.2);
+
+  --badge-failed-bg: rgba(244, 63, 94, 0.1);
+  --badge-failed-text: rgb(251, 113, 133);
+  --badge-failed-border: rgba(244, 63, 94, 0.2);
+
+  --badge-partial-bg: rgba(245, 158, 11, 0.1);
+  --badge-partial-text: rgb(251, 191, 36);
+  --badge-partial-border: rgba(245, 158, 11, 0.2);
+
+  --badge-skipped-bg: rgba(100, 116, 139, 0.1);
+  --badge-skipped-text: rgb(148, 163, 184);
+  --badge-skipped-border: rgba(51, 65, 85, 0.5);
+}
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -42,14 +280,14 @@
     margin-bottom: 1rem;
   }
   .alert-success {
-    background-color: rgba(16, 185, 129, 0.1);
-    color: #34d399;
-    border: 1px solid rgba(16, 185, 129, 0.2);
+    background-color: var(--alert-success-bg);
+    color: var(--alert-success-text);
+    border: 1px solid var(--alert-success-border);
   }
   .alert-error {
-    background-color: rgba(244, 63, 94, 0.1);
-    color: #fb7185;
-    border: 1px solid rgba(244, 63, 94, 0.2);
+    background-color: var(--alert-error-bg);
+    color: var(--alert-error-text);
+    border: 1px solid var(--alert-error-border);
   }
 
   .badge-success,
@@ -66,23 +304,23 @@
     font-weight: 500;
   }
   .badge-success {
-    background-color: rgba(16, 185, 129, 0.1);
-    color: #34d399;
-    border: 1px solid rgba(16, 185, 129, 0.2);
+    background-color: var(--badge-success-bg);
+    color: var(--badge-success-text);
+    border: 1px solid var(--badge-success-border);
   }
   .badge-failed {
-    background-color: rgba(244, 63, 94, 0.1);
-    color: #fb7185;
-    border: 1px solid rgba(244, 63, 94, 0.2);
+    background-color: var(--badge-failed-bg);
+    color: var(--badge-failed-text);
+    border: 1px solid var(--badge-failed-border);
   }
   .badge-partial {
-    background-color: rgba(245, 158, 11, 0.1);
-    color: #fbbf24;
-    border: 1px solid rgba(245, 158, 11, 0.2);
+    background-color: var(--badge-partial-bg);
+    color: var(--badge-partial-text);
+    border: 1px solid var(--badge-partial-border);
   }
   .badge-skipped {
-    background-color: rgba(100, 116, 139, 0.1);
-    color: #94a3b8;
-    border: 1px solid rgba(51, 65, 85, 0.5);
+    background-color: var(--badge-skipped-bg);
+    color: var(--badge-skipped-text);
+    border: 1px solid var(--badge-skipped-border);
   }
 }

@@ -4,15 +4,15 @@
 {% block content %}
 <div class="pb-2 border-b border-slate-800 flex flex-wrap items-end justify-between gap-3">
   <div>
-    <h1 class="text-2xl font-bold tracking-tight text-white flex items-center gap-2">
+    <h1 class="text-2xl font-bold tracking-tight text-slate-50 flex items-center gap-2">
       <i data-lucide="list-checks" class="w-6 h-6 text-indigo-400"></i>
       Executions
     </h1>
     <p class="text-xs text-slate-400 mt-1">One execution per task and window occurrence. Accepted and permanently refused recipients are never sent again; an UNKNOWN outcome waits for a decision below.</p>
   </div>
   <div class="flex items-center gap-2 text-xs">
-    <a href="/executions" class="px-3 py-1.5 rounded-lg border {% if not state_filter %}bg-slate-800 text-white border-indigo-500{% else %}text-slate-400 border-slate-700 hover:text-slate-200{% endif %}">All</a>
-    <a href="/executions?state=NEEDS_REVIEW" class="px-3 py-1.5 rounded-lg border {% if state_filter == 'NEEDS_REVIEW' %}bg-slate-800 text-white border-indigo-500{% else %}text-slate-400 border-slate-700 hover:text-slate-200{% endif %}">Needs review</a>
+    <a href="/executions" class="px-3 py-1.5 rounded-lg border {% if not state_filter %}bg-slate-800 text-slate-50 border-indigo-500{% else %}text-slate-400 border-slate-700 hover:text-slate-200{% endif %}">All</a>
+    <a href="/executions?state=NEEDS_REVIEW" class="px-3 py-1.5 rounded-lg border {% if state_filter == 'NEEDS_REVIEW' %}bg-slate-800 text-slate-50 border-indigo-500{% else %}text-slate-400 border-slate-700 hover:text-slate-200{% endif %}">Needs review</a>
   </div>
 </div>
 
@@ -35,7 +35,7 @@
       {% for e in executions %}
       <tr class="hover:bg-slate-800/40 transition-colors">
         <td class="py-3 px-4 font-mono"><a class="text-indigo-400 underline" href="/executions/{{ e.execution_id }}">#{{ e.execution_id }}</a>{% if e.legacy %} <span class="badge-skipped" title="Converted from last_run/last_status by migration 6">legacy</span>{% endif %}</td>
-        <td class="py-3 px-4 font-mono text-white">{{ e.task_id }}</td>
+        <td class="py-3 px-4 font-mono text-slate-50">{{ e.task_id }}</td>
         <td class="py-3 px-4 font-mono text-slate-400">v{{ e.task_version }} / g{{ e.dispatch_generation }}</td>
         <td class="py-3 px-4 font-mono text-slate-400">{{ e.window_key }}</td>
         <td class="py-3 px-4">{{ state_badge(e.state) }}</td>
@@ -52,7 +52,7 @@
 </div>
 
 <div class="space-y-2">
-  <h2 class="text-sm font-semibold text-white flex items-center gap-2">
+  <h2 class="text-sm font-semibold text-slate-50 flex items-center gap-2">
     <i data-lucide="mail-check" class="w-4 h-4 text-indigo-400"></i>
     Status reports
   </h2>

@@ -46,6 +46,18 @@ PAGES = [
     "/executions/1",
 ]
 
+PANEL_PAGES = [
+    "/",
+    "/tasks",
+    f"/tasks?edit={EVIL_ID}",
+    "/schedules",
+    f"/schedules?edit={EVIL_ID}",
+    "/settings",
+    "/executions",
+    "/executions?state=NEEDS_REVIEW",
+    "/executions/1",
+]
+
 
 @pytest.fixture
 def client(tmp_path: Path) -> TestClient:
@@ -168,3 +180,47 @@ def test_execution_pages_show_the_malicious_id_only_as_text(client: TestClient) 
         html = client.get(path).text
         assert "x&#39;);alert(document.domain);(&#39;" in html, path
         assert "alert(document.domain);('" not in html, path
+
+
+@pytest.mark.parametrize("path", PANEL_PAGES)
+def test_theme_script_and_toggle_present(client: TestClient, path: str) -> None:
+    html = client.get(path).text
+    # theme.js must be loaded in <head> before app.css, without defer or async
+    theme_pos = html.find('src="/static/theme.js')
+    css_pos = html.find('href="/static/app.css')
+    head_end = html.find("</head>")
+
+    assert theme_pos != -1, f"theme.js missing in head on {path}"
+    assert css_pos != -1, f"app.css missing in head on {path}"
+    assert head_end != -1, f"</head> missing on {path}"
+
+    assert theme_pos < head_end, f"theme.js must be inside <head> on {path}"
+    assert theme_pos < css_pos, f"theme.js must precede app.css on {path}"
+
+    theme_tag = re.search(r'<script\b[^>]*src="/static/theme\.js[^"]*"[^>]*>', html)
+    assert theme_tag is not None, f"theme.js tag not found on {path}"
+    tag_str = theme_tag.group(0)
+    assert "defer" not in tag_str, f"theme.js must not be deferred: {tag_str}"
+    assert "async" not in tag_str, f"theme.js must not be async: {tag_str}"
+
+    # Toggle button check
+    assert 'data-on-click="toggle-theme"' in html, f"toggle button missing on {path}"
+    assert 'aria-label="Toggle color theme"' in html, f"accessible label missing on {path}"
+
+
+def test_theme_assets_and_selectors() -> None:
+    theme_js = (PACKAGE_STATIC_DIR / "theme.js").read_text()
+    app_js = (PACKAGE_STATIC_DIR / "app.js").read_text()
+    app_css = (PACKAGE_STATIC_DIR / "app.css").read_text()
+
+    # Verify localStorage key and try/catch error handling in JS
+    assert "mail-cadence-theme" in theme_js
+    assert "mail-cadence-theme" in app_js
+    assert "try {" in theme_js
+    assert "catch" in theme_js
+    assert "try {" in app_js
+    assert "catch" in app_js
+
+    # Verify app.css contains light theme selectors and prefers-color-scheme
+    assert "[data-theme=light]" in app_css or '[data-theme="light"]' in app_css
+    assert "prefers-color-scheme" in app_css
