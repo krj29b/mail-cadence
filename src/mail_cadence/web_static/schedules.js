@@ -52,7 +52,7 @@
     field.value = JSON.stringify(windows);
   }
 
-  const INPUT = "w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500";
+  const INPUT = "w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-50 font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500";
 
   function createRow(data) {
     const row = document.createElement("div");
