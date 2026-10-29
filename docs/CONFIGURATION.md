@@ -23,6 +23,7 @@ Supported environment settings defined in `mail_cadence.models.Settings`:
 | `ADMIN_PASSWORD` | *None* | Web panel password |
 | `ADMIN_LOGIN_MAX_FAILURES` | `10` | Wrong web panel logins allowed per client IP within the window; further attempts get `429 Too Many Requests` |
 | `ADMIN_LOGIN_WINDOW_SECONDS` | `900` | Length of that window (sliding) in seconds |
+| `LOG_FORMAT` | `text` | Log format on stdout (`text` or `json`) |
 
 ## Database Upgrades
 
