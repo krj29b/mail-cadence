@@ -31,7 +31,7 @@ make audit
 # Run all quality gate checks in sequence
 make quality-gate
 
-# Build the wheel and smoke-test it in a clean virtual environment
+# Build the distributions and smoke-test them in clean virtual environments
 make smoke-test
 
 # Rebuild the web panel CSS/JS/fonts after changing templates (needs Node.js)
