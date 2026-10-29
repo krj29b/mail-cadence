@@ -6,13 +6,13 @@ import sys
 from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 import typer
 from pydantic import ValidationError
 
 from mail_cadence import __version__
-from mail_cadence.database import get_connection, init_db
+from mail_cadence.database import get_connection, init_db, to_utc_iso
 from mail_cadence.health import Thresholds
 from mail_cadence.health import check as check_health
 from mail_cadence.health import unknown as health_unknown
@@ -55,13 +55,37 @@ def version_callback(value: bool) -> None:
         raise typer.Exit(code=0)
 
 
-def setup_logging(verbose: bool = False) -> None:
+class JsonFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        dt = datetime.fromtimestamp(record.created, UTC)
+        data: dict[str, Any] = {
+            "timestamp": to_utc_iso(dt),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+        if record.exc_info:
+            data["exception"] = self.formatException(record.exc_info)
+        return json.dumps(data, ensure_ascii=False)
+
+
+def setup_logging(verbose: bool = False, log_format: str = "text") -> None:
     level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        handlers=[logging.StreamHandler(sys.stdout)],
-    )
+    handler = logging.StreamHandler(sys.stdout)
+    if log_format.lower() == "json":
+        handler.setFormatter(JsonFormatter())
+        logging.basicConfig(
+            level=level,
+            handlers=[handler],
+            force=True,
+        )
+    else:
+        logging.basicConfig(
+            level=level,
+            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+            handlers=[handler],
+            force=True,
+        )
 
 
 async def run_dispatch_pipeline(
@@ -77,8 +101,8 @@ async def run_dispatch_pipeline(
 
     Library code can call ``mail_cadence.pipeline.run_dispatch`` directly.
     """
-    setup_logging(verbose)
     settings = Settings.load()
+    setup_logging(verbose, log_format=settings.log_format)
     options = DispatchOptions(
         db_path=_resolve_db_path(db_path, settings),
         template_dir=template_dir,
@@ -393,7 +417,8 @@ def cli_serve(
         )
         raise typer.Exit(code=1)
 
-    setup_logging()
+    settings = Settings.load()
+    setup_logging(log_format=settings.log_format)
     resolved_db = _resolve_db_path(db)
     with closing(get_connection(resolved_db)) as conn:
         init_db(conn)

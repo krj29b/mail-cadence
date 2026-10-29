@@ -77,3 +77,6 @@ Until every `UNKNOWN` recipient of an execution has a decision, the task is not 
 ## Manual Sends
 
 The **Run** button on the Tasks page sends a task once per page load: clicking again reports the same send; reload the page to send it again. A manual send ignores the schedule window, but not another worker sending the same task or an unresolved unknown outcome.
+## Log Shipping (Loki / ELK)
+
+Setting `LOG_FORMAT=json` configures log output as single-line JSON objects on standard output for ingestion by log shippers such as Grafana Loki, Fluentbit, or Elastic Vector. Each record includes `timestamp` (ISO 8601 in UTC), `level`, `logger`, `message`, and `exception` (formatted traceback present only when an exception occurred).

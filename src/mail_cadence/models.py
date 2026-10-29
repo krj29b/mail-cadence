@@ -6,7 +6,7 @@ from email.utils import getaddresses
 from enum import StrEnum
 from functools import cached_property, lru_cache
 from pathlib import Path
-from typing import Any, Self
+from typing import Any, Literal, Self
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
@@ -311,6 +311,16 @@ class Settings(BaseSettings):
     # Wrong web panel logins allowed per client IP within the window (then 429).
     admin_login_max_failures: int = Field(default=10, ge=1)
     admin_login_window_seconds: float = Field(default=900.0, gt=0)
+    log_format: Literal["text", "json"] = "text"
+
+    @field_validator("log_format", mode="before")
+    @classmethod
+    def normalize_log_format(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            v_clean = v.strip().lower()
+            if v_clean in ("text", "json"):
+                return v_clean
+        return v
 
     @property
     def smtp_auth_unencrypted(self) -> bool:
