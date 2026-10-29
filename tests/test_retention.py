@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from mail_cadence.database import get_connection, init_db
 from mail_cadence.execution_store import Claim, ClaimRequest
@@ -191,3 +192,92 @@ def test_dispatch_run_applies_retention(tmp_path: Path) -> None:
         create_app(db_path=db_path, template_dir=tmp_path, allow_insecure_no_auth=True)
     ).get("/executions/1")
     assert "content removed after the retention period" in page.text
+
+
+def test_message_retention_days_setting_validation(monkeypatch: pytest.MonkeyPatch) -> None:
+    s_default = Settings(_env_file=None)  # type: ignore[call-arg]
+    assert s_default.message_retention_days == 30
+
+    s_min = Settings(_env_file=None, message_retention_days=1)  # type: ignore[call-arg]
+    assert s_min.message_retention_days == 1
+
+    s_max = Settings(_env_file=None, message_retention_days=3650)  # type: ignore[call-arg]
+    assert s_max.message_retention_days == 3650
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, message_retention_days=0)  # type: ignore[call-arg]
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, message_retention_days=3651)  # type: ignore[call-arg]
+
+    monkeypatch.setenv("MESSAGE_RETENTION_DAYS", "7")
+    s_env = Settings(_env_file=None)  # type: ignore[call-arg]
+    assert s_env.message_retention_days == 7
+
+
+def test_dispatch_run_uses_configurable_message_retention_days(tmp_path: Path) -> None:
+    (tmp_path / "body.html.j2").write_text("<p>Hello</p>", encoding="utf-8")
+    db_path = tmp_path / "cadence.db"
+    with closing(get_connection(db_path)) as conn:
+        init_db(conn)
+        repo = DatabaseRepository(conn)
+        repo.save_work_schedules(
+            WorkSchedules(
+                timezone="UTC",
+                schedules=[
+                    Schedule(id="S1", allowed_hours=[HourWindow(start="06:00", end="18:00")])
+                ],
+            )
+        )
+        repo.save_single_task(
+            MailTask(
+                id="T1",
+                schedule_ref="S1",
+                sender="cadence@example.com",
+                subject="Hello",
+                recipients=Recipients(to=[A]),
+                body_template=BodyTemplate(template_path="body.html.j2"),
+            )
+        )
+
+    def run(ref_day: int, retention_days: int) -> int:
+        options = DispatchOptions(
+            db_path=db_path,
+            template_dir=tmp_path,
+            ref_dt=datetime(2026, 10, 17, 10, 0, tzinfo=UTC) + timedelta(days=ref_day),
+        )
+        settings = Settings(
+            _env_file=None,  # type: ignore[call-arg]
+            smtp_host="127.0.0.1",
+            smtp_port=port,
+            message_retention_days=retention_days,
+        )
+        return asyncio.run(run_dispatch(options, settings))
+
+    with SMTPSink() as sink:
+        port = sink.port
+        assert run(0, retention_days=7) == EXIT_OK
+        assert run(1, retention_days=7) == EXIT_OK
+
+        now = datetime.now(UTC)
+        finished_8_days_ago = (now - timedelta(days=8)).isoformat()
+        finished_6_days_ago = (now - timedelta(days=6)).isoformat()
+
+        with closing(sqlite3.connect(db_path)) as conn, conn:
+            conn.execute(
+                "UPDATE task_executions SET finished_at = ? WHERE execution_id = 1",
+                (finished_8_days_ago,),
+            )
+            conn.execute(
+                "UPDATE task_executions SET finished_at = ? WHERE execution_id = 2",
+                (finished_6_days_ago,),
+            )
+
+        assert run(2, retention_days=7) == EXIT_OK
+
+    with closing(sqlite3.connect(db_path)) as conn:
+        stored = conn.execute(
+            "SELECT execution_id, message_bytes IS NOT NULL FROM task_executions "
+            "WHERE execution_id IN (1, 2) ORDER BY execution_id"
+        ).fetchall()
+    assert stored == [(1, 0), (2, 1)]

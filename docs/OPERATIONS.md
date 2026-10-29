@@ -62,7 +62,7 @@ When a run executed at least one task and report settings are configured, its re
 
 ## Retention
 
-Stored messages (task and report) are deleted 30 days after their delivery is over; the Message-ID, the per-recipient outcomes, the attempts and the event history are kept. A delivery that still needs review keeps its message.
+Stored messages (task and report) are deleted after their delivery is over (default 30 days, configurable via `MESSAGE_RETENTION_DAYS` from `1` to `3650` days); the Message-ID, the per-recipient outcomes, the attempts and the event history are kept. A delivery that still needs review keeps its message.
 
 ## Reviewing Unknown Deliveries
 
