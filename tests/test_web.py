@@ -1,4 +1,5 @@
 import asyncio
+import sqlite3
 import threading
 from contextlib import closing
 from pathlib import Path
@@ -858,3 +859,51 @@ def test_discover_available_templates_skips_hidden_and_ignored_dirs(tmp_path: Pa
 
     user_templates = [t for t in _discover_available_templates(tmp_path) if ":" not in t]
     assert user_templates == ["ok/a.j2"]
+
+
+def test_write_waiting_for_the_lock_does_not_stall_other_requests(
+    tmp_db_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A panel write waiting for the lock held by a dispatch runs in the thread pool;
+    other requests are served meanwhile instead of queueing behind the event loop."""
+    reached_write = threading.Event()
+    original_save = DatabaseRepository.save_report_settings
+
+    def signalling_save(self: DatabaseRepository, settings: ReportSettings) -> None:
+        reached_write.set()
+        original_save(self, settings)
+
+    monkeypatch.setattr(DatabaseRepository, "save_report_settings", signalling_save)
+    app = create_app(db_path=tmp_db_path, template_dir=tmp_path, allow_insecure_no_auth=True)
+    codes: dict[str, int] = {}
+
+    with (
+        TestClient(app) as client,
+        closing(sqlite3.connect(tmp_db_path, isolation_level=None)) as holder,
+    ):
+
+        def post_settings() -> None:
+            resp = client.post("/settings", data={"recipient": "ops@example.com"})
+            codes["post"] = resp.status_code
+
+        def get_stats() -> None:
+            codes["get"] = client.get("/api/stats").status_code
+
+        writer = threading.Thread(target=post_settings)
+        reader = threading.Thread(target=get_stats)
+        holder.execute("BEGIN IMMEDIATE")
+        try:
+            writer.start()
+            assert reached_write.wait(10), "the POST never reached the repository"
+            reader.start()
+            reader.join(10)
+            served_while_locked = not reader.is_alive()
+            write_was_waiting = writer.is_alive()
+        finally:
+            holder.execute("ROLLBACK")
+            writer.join(60)
+            reader.join(60)
+
+    assert write_was_waiting, "the write did not wait for the lock"
+    assert served_while_locked, "a read was blocked by a write waiting for the lock"
+    assert codes == {"post": 200, "get": 200}

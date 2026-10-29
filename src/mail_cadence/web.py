@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import jinja2
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, status
+from fastapi.datastructures import FormData
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
@@ -471,6 +472,17 @@ def get_repo(request: Request) -> Generator[DatabaseRepository, None, None]:
         yield DatabaseRepository(conn)
 
 
+async def get_form(request: Request) -> FormData:
+    """Read the form body on the event loop.
+
+    Endpoints that take it stay plain ``def``, so FastAPI runs them, and their
+    SQLite calls, in the thread pool: a write waiting up to ``busy_timeout`` for
+    the lock held by a dispatch must not stall the event loop and every other
+    request with it.
+    """
+    return await request.form()
+
+
 def parse_email_list(raw_input: str) -> list[str]:
     if not raw_input:
         return []
@@ -655,13 +667,13 @@ def _build_task_from_form_dict(form_dict: dict[str, Any], default_sender: str = 
 
 
 @router.post("/tasks", response_class=HTMLResponse)
-async def save_task(
+def save_task(
     request: Request,
     repo: DatabaseRepository = Depends(get_repo),
+    form_data: FormData = Depends(get_form),
 ) -> Response:
     default_sender = _get_settings(request).smtp_user or ""
     try:
-        form_data = await request.form()
         form_dict = {k: v for k, v in form_data.items()}
         task = _build_task_from_form_dict(form_dict, default_sender=default_sender)
         if not repo.schedule_exists(task.schedule_ref):
@@ -820,11 +832,11 @@ def _render_schedules_page(
 
 
 @router.post("/schedules", response_class=HTMLResponse)
-async def save_schedule(
+def save_schedule(
     request: Request,
     repo: DatabaseRepository = Depends(get_repo),
+    form: FormData = Depends(get_form),
 ) -> Response:
-    form = await request.form()
     schedule_id = str(form.get("id", ""))
     desc = form.get("description")
     description = str(desc) if desc is not None and str(desc).strip() else None
@@ -848,11 +860,11 @@ async def save_schedule(
 
 
 @router.post("/schedules/timezone", response_class=HTMLResponse)
-async def update_timezone(
+def update_timezone(
     request: Request,
     repo: DatabaseRepository = Depends(get_repo),
+    form: FormData = Depends(get_form),
 ) -> Response:
-    form = await request.form()
     tz_val = str(form.get("timezone", "UTC"))
 
     try:
@@ -912,11 +924,11 @@ def _render_settings_page(
 
 
 @router.post("/settings", response_class=HTMLResponse)
-async def save_settings(
+def save_settings(
     request: Request,
     repo: DatabaseRepository = Depends(get_repo),
+    form: FormData = Depends(get_form),
 ) -> Response:
-    form = await request.form()
     recipient = str(form.get("recipient", ""))
     sender_raw = form.get("sender")
     sender = str(sender_raw) if sender_raw and str(sender_raw).strip() else None
@@ -966,11 +978,11 @@ def api_logs(
 
 
 @router.post("/dispatch/run", response_class=HTMLResponse)
-async def trigger_dispatch_run(
+def trigger_dispatch_run(
     request: Request,
     filters: LogFilters = Depends(get_log_filters),
+    form: FormData = Depends(get_form),
 ) -> Response:
-    form = await request.form()
     dry_run_raw = form.get("dry_run", request.query_params.get("dry_run", "false"))
     dry_run = str(dry_run_raw).lower() in ("true", "1", "on", "yes")
 
@@ -1093,10 +1105,11 @@ def _panel_actor(request: Request) -> str:
 
 
 @router.post("/executions/{execution_id}/resolve", response_class=HTMLResponse)
-async def resolve_execution_recipient(
+def resolve_execution_recipient(
     execution_id: int,
     request: Request,
     repo: DatabaseRepository = Depends(get_repo),
+    form: FormData = Depends(get_form),
 ) -> Response:
     """Operator decision for an UNKNOWN recipient (ADR 0001, D12)."""
     if repo.get_execution_detail(execution_id) is None:
@@ -1104,7 +1117,6 @@ async def resolve_execution_recipient(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Execution {execution_id} not found",
         )
-    form = await request.form()
     recipient = str(form.get("recipient", ""))
     try:
         attempt_raw = str(form.get("attempt_id", "")).strip()

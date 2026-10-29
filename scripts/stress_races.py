@@ -34,6 +34,7 @@ RACE_TESTS = (
     "tests/test_mailer_attempts.py::test_pooled_session_closed_on_idle_timeout_is_replaced",
     "tests/test_dispatch_jobs.py::test_only_one_of_many_concurrent_starts_wins",
     "tests/test_web.py::test_web_dispatch_lock_conflict",
+    "tests/test_web.py::test_write_waiting_for_the_lock_does_not_stall_other_requests",
 )
 _FAILED_RE = re.compile(r"^(?:FAILED|ERROR) (\S+)", re.MULTILINE)
 OUTPUT_TAIL_LINES = 80
