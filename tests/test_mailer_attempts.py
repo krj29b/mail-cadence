@@ -424,3 +424,50 @@ async def test_pooled_session_lost_after_mail_from_is_not_reconnected(
     assert {r.outcome for r in second.values()} == {Outcome.TRANSIENT}
     assert _mail_sessions(sink) == [1, 1]
     assert [d.recipients for d in sink.deliveries] == [(A,)]
+
+
+# --- Sessions abandoned mid-transaction ------------------------------------------------
+
+
+@pytest.mark.parametrize("pooled", [False, True], ids=["single-use", "pooled"])
+async def test_session_cancelled_inside_data_is_closed_without_quit(
+    tmp_path: Path, sink: SMTPSink, monkeypatch: pytest.MonkeyPatch, pooled: bool
+) -> None:
+    """Cancelled after the server's 354, before the body ends: the server reads a QUIT
+    as message text and never answers it, so closing would wait for smtp_timeout."""
+    mailer = _mailer(tmp_path, sink.port)
+    data = _message(mailer).data
+    cancelled: list[aiosmtplib.SMTP] = []
+    quit_by: list[aiosmtplib.SMTP] = []
+    original_data = aiosmtplib.SMTP.data
+    original_quit = aiosmtplib.SMTP.quit
+
+    # AsyncMailer passes no timeout; these keep the client's own (timeout=None is none).
+    async def data_then_cancel(self: aiosmtplib.SMTP, message: bytes) -> aiosmtplib.SMTPResponse:
+        if cancelled:
+            return await original_data(self, message)
+        cancelled.append(self)
+        await self.execute_command(b"DATA")  # 354: the server now reads message text
+        raise asyncio.CancelledError
+
+    async def recording_quit(self: aiosmtplib.SMTP) -> aiosmtplib.SMTPResponse:
+        quit_by.append(self)
+        return await original_quit(self)
+
+    monkeypatch.setattr(aiosmtplib.SMTP, "data", data_then_cancel)
+    monkeypatch.setattr(aiosmtplib.SMTP, "quit", recording_quit)
+
+    if pooled:
+        async with mailer:
+            with pytest.raises(asyncio.CancelledError):
+                await mailer.deliver(data, [A])
+            second = await mailer.deliver(data, [B])
+        assert _outcomes(second) == {B: (Outcome.ACCEPTED, 250)}
+        assert [d.session for d in sink.deliveries] == [2], "the abandoned session is not reused"
+    else:
+        with pytest.raises(asyncio.CancelledError):
+            await mailer.deliver(data, [A])
+        assert sink.deliveries == []
+
+    assert cancelled[0] not in quit_by, "QUIT was sent inside DATA"
+    assert not cancelled[0].is_connected

@@ -366,12 +366,26 @@ class AsyncMailer:
                 return self._pool.get_nowait()
         return None
 
-    async def _release_pooled_client(self, client: SMTPClient, keep_client: bool) -> None:
-        # A client that lost its connection is never returned to the pool.
-        if keep_client and self._pool is not None and client.is_connected:
+    async def _release_client(self, client: SMTPClient, pooled: bool) -> None:
+        """Return a cleanly finished session to the pool, or QUIT and close it.
+
+        A client that lost its connection is never returned to the pool.
+        """
+        if pooled and self._pool is not None and client.is_connected:
             self._pool.put_nowait(client)
         else:
             await self._close_client(client)
+
+    async def _pooled_or_new_client(self, reuse: bool) -> tuple[SMTPClient, bool]:
+        pooled = self._take_pooled_client() if reuse else None
+        if pooled is not None and not pooled.is_connected:
+            # Never reconnect a client the server disconnected: aiosmtplib 3.0.x
+            # hangs in connect() on such an object. Open a new one instead.
+            await self._close_client(pooled)
+            pooled = None
+        if pooled is not None:
+            return pooled, True
+        return self._get_smtp_connection(), False
 
     @contextlib.asynccontextmanager
     async def _acquire_smtp_client(
@@ -387,33 +401,21 @@ class AsyncMailer:
             yield client, False
             return
 
-        if self._in_context and self._pool is not None:
-            pooled = self._take_pooled_client() if reuse else None
-            if pooled is not None and not pooled.is_connected:
-                # Never reconnect a client the server disconnected: aiosmtplib 3.0.x
-                # hangs in connect() on such an object. Open a new one instead.
-                await self._close_client(pooled)
-                pooled = None
-            client = pooled if pooled is not None else self._get_smtp_connection()
-            reused = pooled is not None
-            keep_client = True
-            try:
-                await self._ensure_connected(client)
-                yield client, reused
-            except BaseException:
-                # Any failure may leave the session mid-transaction: never reuse it.
-                keep_client = False
-                raise
-            finally:
-                await self._release_pooled_client(client, keep_client)
-            return
-
-        client = self._get_smtp_connection()
+        pooled = self._in_context and self._pool is not None
+        if pooled:
+            client, reused = await self._pooled_or_new_client(reuse)
+        else:
+            client, reused = self._get_smtp_connection(), False
         try:
             await self._ensure_connected(client)
-            yield client, False
-        finally:
-            await self._close_client(client)
+            yield client, reused
+        except BaseException:
+            # Any failure or cancellation may leave the session mid-transaction, even
+            # inside DATA, where the server reads a QUIT as message text and never
+            # answers it: drop the connection without QUIT and never reuse it.
+            client.close()
+            raise
+        await self._release_client(client, pooled)
 
     def render_task_message(self, task: MailTask) -> RenderedMessage:
         """Render and serialise a task message; raises one of RENDER_ERRORS on failure."""
