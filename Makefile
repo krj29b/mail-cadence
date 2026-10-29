@@ -29,14 +29,23 @@ audit:
 
 quality-gate: lint dead-code complexity audit test
 
-# Build the distributions and smoke-test the wheel in a throwaway virtual environment
+# Build the distributions and smoke-test them in throwaway virtual environments
 # (Linux/macOS paths; CI runs the same script on Windows too).
 smoke-test:
-	rm -rf dist .smoke-venv
+	rm -rf dist
 	$(PYTHON) -m build
-	$(PYTHON) -m venv .smoke-venv
-	.smoke-venv/bin/python -m pip install -q dist/*.whl httpx
-	cd /tmp && $(CURDIR)/.smoke-venv/bin/python -I $(CURDIR)/scripts/smoke_test_wheel.py --repo $(CURDIR)
+	set -e; \
+	VERSION=$$($(PYTHON) -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])'); \
+	SMOKE_DIR="$${TMPDIR:-/tmp}/mail-cadence-smoke"; \
+	rm -rf "$$SMOKE_DIR"; \
+	mkdir -p "$$SMOKE_DIR"; \
+	for dist in dist/*.whl dist/*.tar.gz; do \
+		venv_dir="$$SMOKE_DIR/venv-$$(basename "$$dist")"; \
+		$(PYTHON) -m venv "$$venv_dir"; \
+		"$$venv_dir/bin/python" -m pip install -q "$$dist" httpx; \
+		(cd "$$SMOKE_DIR" && "$$venv_dir/bin/python" -I "$(CURDIR)/scripts/smoke_test_wheel.py" --repo "$(CURDIR)" --expect-version "$$VERSION"); \
+	done; \
+	rm -rf "$$SMOKE_DIR"
 
 # Rebuild the web panel assets in src/mail_cadence/web_static (needs Node.js; the result
 # is committed, so installing or packaging mail-cadence never needs Node).
@@ -55,4 +64,4 @@ run-dry:
 		--dry-run
 
 clean:
-	rm -rf .pytest_cache .mypy_cache .ruff_cache .coverage dist build *.egg-info .smoke-venv
+	rm -rf .pytest_cache .mypy_cache .ruff_cache .coverage dist build *.egg-info
