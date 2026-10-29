@@ -273,6 +273,19 @@ def get_connection(
     return conn
 
 
+def get_readonly_connection(db_path: str | Path) -> sqlite3.Connection:
+    """Open an existing database for reading only.
+
+    Never creates the file, runs migrations or writes; a missing file raises
+    sqlite3.OperationalError. Used by monitoring (``mail-cadence status``).
+    """
+    uri = Path(db_path).resolve().as_uri() + "?mode=ro"
+    conn = sqlite3.connect(uri, uri=True, timeout=30.0)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 30000;")
+    return conn
+
+
 def to_utc_iso(dt: datetime) -> str:
     """The one timestamp format stored in the database: ISO 8601 in UTC with offset."""
     if dt.tzinfo is None:

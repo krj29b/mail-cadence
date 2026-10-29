@@ -1,9 +1,10 @@
 import asyncio
+import json
 import logging
 import sqlite3
 import sys
 from contextlib import closing
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -12,6 +13,9 @@ from pydantic import ValidationError
 
 from mail_cadence import __version__
 from mail_cadence.database import get_connection, init_db
+from mail_cadence.health import Thresholds
+from mail_cadence.health import check as check_health
+from mail_cadence.health import unknown as health_unknown
 from mail_cadence.models import Settings
 from mail_cadence.pipeline import DispatchOptions, run_dispatch
 from mail_cadence.xml_loader import (
@@ -278,6 +282,59 @@ def cli_export_xml(
         except (sqlite3.Error, OSError, ValidationError) as exc:
             typer.echo(f"Error exporting XML: {exc}", err=True)
             raise typer.Exit(code=1) from exc
+
+
+@app.command("status")
+def cli_status(
+    db: Annotated[
+        str,
+        typer.Option(
+            "--db",
+            "-b",
+            envvar="MAIL_CADENCE_DB",
+            help="Path to SQLite database file",
+        ),
+    ] = DEFAULT_DB,
+    warning_age: Annotated[
+        str,
+        typer.Option(
+            "--warning-age",
+            help="WARNING when the last finished dispatch run is older (e.g. 30m)",
+        ),
+    ] = "30m",
+    critical_age: Annotated[
+        str,
+        typer.Option(
+            "--critical-age",
+            help="CRITICAL when the last finished dispatch run is older (e.g. 2h)",
+        ),
+    ] = "2h",
+    since: Annotated[
+        str,
+        typer.Option(
+            "--since",
+            help="How far back failed executions and reports count (e.g. 24h)",
+        ),
+    ] = "24h",
+    as_json: Annotated[
+        bool,
+        typer.Option("--json", help="Print a JSON object instead of the status line"),
+    ] = False,
+) -> None:
+    """Check the database for monitoring (exit 0 OK, 1 WARNING, 2 CRITICAL, 3 UNKNOWN).
+
+    Read-only: never creates, migrates or writes the database.
+    """
+    now = datetime.now(UTC)
+    try:
+        thresholds = Thresholds.parse(warning_age, critical_age, since)
+        resolved_db = _resolve_db_path(db)
+    except ValueError as exc:  # also pydantic's ValidationError from the .env file
+        report = health_unknown(str(exc), now)
+    else:
+        report = check_health(resolved_db, thresholds, now)
+    typer.echo(json.dumps(report.as_dict()) if as_json else report.status_line())
+    raise typer.Exit(code=int(report.severity))
 
 
 @app.command("serve")

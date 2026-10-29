@@ -66,7 +66,7 @@
         </div>
         <div class="flex justify-between gap-2">
           <dt class="text-slate-500">Timeout:</dt>
-          <dd class="text-slate-200">{{ smtp_settings.smtp_timeout }}s</dd>
+          <dd class="text-slate-200">{{ smtp_settings.smtp_timeout | decimal3 }}s</dd>
         </div>
       </dl>
       {% if smtp_settings.smtp_auth_blocked %}

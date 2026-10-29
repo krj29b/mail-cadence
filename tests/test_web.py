@@ -1,5 +1,6 @@
 import asyncio
 import threading
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -19,7 +20,7 @@ from mail_cadence.models import (
     WorkSchedules,
 )
 from mail_cadence.repository import DatabaseRepository
-from mail_cadence.web import _discover_available_templates, create_app
+from mail_cadence.web import _discover_available_templates, create_app, format_decimal
 
 
 @pytest.fixture
@@ -93,6 +94,41 @@ def test_dashboard_and_api_stats(client: TestClient, tmp_db_path: Path) -> None:
     assert data["success_count"] == 1
     assert data["failed_count"] == 1
     assert data["total_emails_sent"] == 10
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (31.000000002677552, "31.000"),
+        (47.00000000593718, "47.000"),
+        (12.34567, "12.346"),
+        (0.0005, "0.001"),
+        (0, "0.000"),
+        (None, ""),
+        ("n/a", "n/a"),
+    ],
+)
+def test_format_decimal(value: object, expected: str) -> None:
+    assert format_decimal(value) == expected
+
+
+def test_float_values_are_shown_with_three_decimals(client: TestClient, tmp_db_path: Path) -> None:
+    with closing(get_connection(tmp_db_path)) as conn:
+        repo = DatabaseRepository(conn)
+        for duration in (31.000000002677552, 47.00000000593718):
+            repo.log_task_execution(
+                TaskExecutionResult(
+                    task_id="task1", status=TaskExecutionStatus.SUCCESS, duration_ms=duration
+                ),
+                batch_id="b1",
+            )
+
+    dashboard = client.get("/").text
+    assert "31.000 ms" in dashboard
+    assert "47.000 ms" in dashboard
+    assert "39.000 ms" in dashboard  # average
+    assert "000002677552" not in dashboard
+    assert "30.000s" in client.get("/settings").text
 
 
 def test_api_logs_filtering(client: TestClient, tmp_db_path: Path) -> None:

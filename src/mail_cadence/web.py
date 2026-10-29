@@ -450,7 +450,18 @@ def format_utc_timestamp(value: object) -> str:
     return dt.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
+UI_DECIMAL_PLACES = 3
+
+
+def format_decimal(value: object) -> str:
+    """Show a number with UI_DECIMAL_PLACES decimal places (other values as plain text)."""
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        return f"{value:.{UI_DECIMAL_PLACES}f}"
+    return "" if value is None else str(value)
+
+
 templates.env.filters["utc_time"] = format_utc_timestamp
+templates.env.filters["decimal3"] = format_decimal
 router = APIRouter()
 
 

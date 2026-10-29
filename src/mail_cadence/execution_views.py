@@ -49,6 +49,40 @@ class ExecutionViewsMixin:
         ).fetchone()
         return int(row[0])
 
+    def health_counts(self, since: str, stalled_before: str) -> Row:
+        """Counters for ``mail-cadence status``; timestamps are ``to_utc_iso`` strings.
+
+        Events in the past (failed executions and reports, unfinished runs) count only
+        from ``since``; a run counts as stalled when it started before ``stalled_before``.
+        """
+        row = self.conn.execute(
+            """
+            SELECT
+              (SELECT COUNT(*) FROM task_executions WHERE state = 'NEEDS_REVIEW')
+                AS needs_review,
+              (SELECT COUNT(*) FROM task_executions
+               WHERE state IN ('FAILED', 'PARTIAL', 'EXPIRED') AND finished_at >= :since)
+                AS executions_failed,
+              (SELECT COUNT(*) FROM report_deliveries WHERE state IN ('PENDING', 'RETRY_WAIT'))
+                AS reports_pending,
+              (SELECT COUNT(*) FROM report_deliveries
+               WHERE state = 'UNKNOWN' AND updated_at >= :since)
+                AS reports_unknown,
+              (SELECT COUNT(*) FROM report_deliveries
+               WHERE state IN ('PERMANENT_FAILURE', 'RETRY_EXHAUSTED') AND updated_at >= :since)
+                AS reports_failed,
+              (SELECT COUNT(*) FROM dispatch_runs
+               WHERE dry_run = 0 AND finished_at IS NULL
+                 AND started_at >= :since AND started_at < :stalled_before)
+                AS stalled_runs,
+              (SELECT MAX(finished_at) FROM dispatch_runs
+               WHERE dry_run = 0 AND source IN ('cli', 'web'))
+                AS last_run_finished_at
+            """,
+            {"since": since, "stalled_before": stalled_before},
+        ).fetchone()
+        return dict(row)
+
     def latest_execution_by_task(self) -> dict[str, Row]:
         """The newest execution of every live task, with the task's current version."""
         rows = self.conn.execute(

@@ -10,11 +10,13 @@ It checks that:
 - every file under src/mail_cadence is present in the installed package (catches files
   missing from the wheel's artifact list);
 - the console script works: --version, import-xml and a dry-run dispatch of the samples;
+- the status command reads the database (no real run yet, so CRITICAL, exit code 2);
 - every sample task renders with its (built-in) template;
 - the web panel starts and serves its pages.
 """
 
 import argparse
+import json
 import subprocess
 import sys
 import sysconfig
@@ -30,12 +32,12 @@ def _fail(message: str) -> None:
     raise SystemExit(1)
 
 
-def _run_cli(*args: str) -> str:
+def _run_cli(*args: str, expected_code: int = 0) -> str:
     exe = Path(sysconfig.get_path("scripts")) / "mail-cadence"
     command = [str(exe), *args]
     print("$", " ".join(command))
     proc = subprocess.run(command, capture_output=True, text=True, check=False)  # noqa: S603
-    if proc.returncode != 0:
+    if proc.returncode != expected_code:
         _fail(f"{' '.join(args)} exited with {proc.returncode}:\n{proc.stdout}\n{proc.stderr}")
     return proc.stdout + proc.stderr
 
@@ -93,6 +95,14 @@ def check_samples(repo: Path, workdir: Path) -> Path:
     return db
 
 
+def check_status(db: Path) -> None:
+    output = _run_cli("status", "--db", str(db), "--json", expected_code=2)
+    result = json.loads(output)
+    if result["status"] != "CRITICAL" or result["findings"][0]["check"] != "last_run":
+        _fail(f"unexpected status output: {output}")
+    print("OK  status reads the database (CRITICAL: no dispatch run yet)")
+
+
 def check_web_panel(db: Path) -> None:
     from fastapi.testclient import TestClient
 
@@ -120,6 +130,7 @@ def main() -> None:
     check_version(args.expect_version)
     with tempfile.TemporaryDirectory() as tmp:
         db = check_samples(repo, Path(tmp))
+        check_status(db)
         check_web_panel(db)
     print("Smoke test passed.")
 

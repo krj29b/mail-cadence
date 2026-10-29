@@ -738,5 +738,5 @@ class DatabaseRepository(ReportStoreMixin, ExecutionViewsMixin):
             "skipped_count": status_counts.get("SKIPPED_SCHEDULE", 0),
             "status_counts": status_counts,
             "total_emails_sent": total_emails_sent,
-            "avg_duration_ms": round(float(avg_duration_ms), 2),
+            "avg_duration_ms": round(float(avg_duration_ms), 3),
         }
