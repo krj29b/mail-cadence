@@ -20,7 +20,7 @@ import uuid
 from collections.abc import AsyncIterator, Iterable, Mapping
 from contextlib import closing
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -169,7 +169,7 @@ async def run_dispatch(options: DispatchOptions, settings: Settings) -> int:
         if options.dry_run:
             code = _simulate(repo, mailer, loaded, options, start_time)
         else:
-            code = await _dispatch(repo, mailer, loaded, options, start_time)
+            code = await _dispatch(repo, mailer, loaded, options, start_time, settings)
 
     logger.info("MailCadence execution complete.")
     return code
@@ -197,6 +197,7 @@ async def _dispatch(
     loaded: _LoadedConfig,
     options: DispatchOptions,
     start_time: datetime,
+    settings: Settings,
 ) -> int:
     run_id = str(uuid.uuid4())
     run = _Run(repo, mailer, run_id, _owner_id(run_id), options.ref_dt)
@@ -205,7 +206,7 @@ async def _dispatch(
         recovered = repo.recover_abandoned()
         if recovered:
             logger.warning(f"Recovered abandoned executions {recovered}; see NEEDS_REVIEW.")
-        purged = repo.purge_message_contents()
+        purged = repo.purge_message_contents(timedelta(days=settings.message_retention_days))
         if purged:
             logger.info(f"Dropped the stored content of {purged} finished deliveries (retention).")
         plan = _plan(run, loaded)

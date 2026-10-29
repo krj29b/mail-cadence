@@ -195,6 +195,8 @@ The serialised message (task or report) is set to NULL 30 days after its executi
 
 *Implemented in stage 7* (`report_store.MESSAGE_RETENTION`, `DatabaseRepository.purge_message_contents`, called at the start of every real run): task executions in `SUCCEEDED`, `PARTIAL`, `FAILED` or `EXPIRED` lose their bytes 30 days after `finished_at`; reports in `ACCEPTED`, `PERMANENT_FAILURE`, `RETRY_EXHAUSTED` or `UNKNOWN` 30 days after their last update. `NEEDS_REVIEW` keeps its message, because "Send again" must send the same bytes however long the review takes. The Message-ID stays, and the panel shows that the content was removed. Each purge writes one `messages_purged` event with the counts.
 
+Update: configurable with MESSAGE_RETENTION_DAYS (default 30).
+
 ### D17. Migration and rollout
 
 1. Append migrations; `SCHEMA_SQL` describes the new tables. Released migrations are not changed.

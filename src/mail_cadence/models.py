@@ -305,6 +305,7 @@ class Settings(BaseSettings):
     smtp_allow_insecure_auth: bool = False
     smtp_timeout: float = 30.0
     mail_cadence_db: str = "mail_cadence.db"
+    message_retention_days: int = Field(default=30, ge=1, le=3650)
 
     admin_user: str | None = None
     admin_password: SecretStr | None = None
