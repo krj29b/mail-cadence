@@ -1,5 +1,6 @@
 import asyncio
 import time as time_module
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
 from zoneinfo import ZoneInfo
@@ -189,15 +190,50 @@ class TaskScheduler:
         if schedule is None:
             return None
         ref_utc = self._normalize_dt(reference_dt).astimezone(UTC)
+        for instance in self._occurrences(schedule, ref_utc, days_back=1):
+            if instance.start_utc <= ref_utc <= instance.end_utc:
+                return instance
+        return None
+
+    def last_window_instance(
+        self, schedule_id: str, reference_dt: datetime | None = None
+    ) -> WindowInstance | None:
+        """The latest occurrence of ``schedule_id`` that has started by ``reference_dt``.
+
+        An open occurrence is returned as ``window_instance`` would return it, so a manual
+        send inside a window gets the same occurrence as the scheduled one. Otherwise the
+        occurrence with the latest start before ``reference_dt``; on equal starts the
+        first window in configuration order wins. Every window has at least one weekday,
+        so it started within the last week; ``None`` only for an unknown schedule or one
+        without windows.
+        """
+        current = self.window_instance(schedule_id, reference_dt)
+        if current is not None:
+            return current
+        schedule = self._schedules_by_id.get(schedule_id)
+        if schedule is None:
+            return None
+        ref_utc = self._normalize_dt(reference_dt).astimezone(UTC)
+        latest: WindowInstance | None = None
+        # One week back, plus the day before for a window that spans midnight.
+        for instance in self._occurrences(schedule, ref_utc, days_back=7):
+            started = instance.start_utc <= ref_utc
+            if started and (latest is None or instance.start_utc > latest.start_utc):
+                latest = instance
+        return latest
+
+    def _occurrences(
+        self, schedule: Schedule, ref_utc: datetime, days_back: int
+    ) -> Iterator[WindowInstance]:
+        """Occurrences starting on the local date of ``ref_utc`` or up to ``days_back``
+        days before, window by window in configuration order, latest date first."""
         local_date = ref_utc.astimezone(self.timezone).date()
         for window in schedule.allowed_hours:
-            for start_date in (local_date, local_date - timedelta(days=1)):
-                if not is_day_matching(window.days_of_week, start_date.weekday()):
-                    continue
-                start_utc, end_utc = _window_bounds(window, start_date, self.timezone)
-                if start_utc <= ref_utc <= end_utc:
-                    return WindowInstance(schedule_id, window, start_utc, end_utc)
-        return None
+            for offset in range(days_back + 1):
+                start_date = local_date - timedelta(days=offset)
+                if is_day_matching(window.days_of_week, start_date.weekday()):
+                    start_utc, end_utc = _window_bounds(window, start_date, self.timezone)
+                    yield WindowInstance(schedule.id, window, start_utc, end_utc)
 
     def window_status(
         self,
