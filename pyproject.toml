@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mail-cadence"
-version = "0.9.4"
+version = "0.9.5"
 description = "Asynchronous SQLite-backed bulk email dispatch and reporting engine with XML import/export support"
 readme = "README.md"
 license = { file = "LICENSE" }
