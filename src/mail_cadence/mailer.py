@@ -34,6 +34,7 @@ from mail_cadence.models import (
     SendContext,
     Settings,
 )
+from mail_cadence.template_filters import register_date_filters
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +122,7 @@ class TemplateRenderer:
                 enabled_extensions=AUTOESCAPE_EXTENSIONS, default_for_string=True
             ),
         )
+        register_date_filters(self.env)
 
     def _resolve_loader_name(self, template_path: str) -> str:
         if template_path.startswith(BUILTIN_TEMPLATE_PREFIX):
