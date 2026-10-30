@@ -155,6 +155,8 @@ CREATE TABLE IF NOT EXISTS task_executions (
     legacy INTEGER NOT NULL DEFAULT 0 CHECK (legacy IN (0, 1)),
     created_at TEXT NOT NULL,
     finished_at TEXT,
+    -- SendContext as JSON (templates: cadence); NULL if claimed before migration 7.
+    send_context_json TEXT,
     UNIQUE (task_uid, dispatch_generation, window_key),
     FOREIGN KEY (task_uid) REFERENCES task_identities(uid) ON DELETE RESTRICT,
     FOREIGN KEY (task_uid, task_version)
@@ -595,6 +597,12 @@ def _migrate_legacy_window_state(conn: sqlite3.Connection) -> None:
         _convert_legacy_row(conn, scheduler, row, now)
 
 
+def _migrate_send_context(conn: sqlite3.Connection) -> None:
+    """7: executions store the context their message is rendered with (cadence.*)."""
+    if "send_context_json" not in _column_names(conn, "task_executions"):
+        conn.execute("ALTER TABLE task_executions ADD COLUMN send_context_json TEXT")
+
+
 MIGRATIONS: tuple[Callable[[sqlite3.Connection], None], ...] = (
     _migrate_base_schema,
     _migrate_task_validation,
@@ -602,6 +610,7 @@ MIGRATIONS: tuple[Callable[[sqlite3.Connection], None], ...] = (
     _migrate_report_subject_prefix_newlines,
     _migrate_execution_state,
     _migrate_legacy_window_state,
+    _migrate_send_context,
 )
 SCHEMA_VERSION = len(MIGRATIONS)
 

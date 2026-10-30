@@ -12,7 +12,7 @@ from typer.testing import CliRunner
 
 from mail_cadence.cli import TEXT_LOG_FORMAT, app, run_dispatch_pipeline, setup_logging
 from mail_cadence.mailer import AsyncMailer, RenderedMessage
-from mail_cadence.models import MailTask, Outcome, RecipientResult
+from mail_cadence.models import MailTask, Outcome, RecipientResult, SendContext
 from mail_cadence.scheduler import TokenBucketRateLimiter
 from mail_cadence.xml_loader import XMLValidationError
 
@@ -237,9 +237,11 @@ async def test_task_priority_scheduling_order(tmp_path: Path) -> None:
     executed_order: list[str] = []
     original_render = AsyncMailer.render_task_message
 
-    def tracked_render(self: AsyncMailer, task: MailTask) -> RenderedMessage:
+    def tracked_render(
+        self: AsyncMailer, task: MailTask, context: SendContext | None = None
+    ) -> RenderedMessage:
         executed_order.append(task.id)
-        return original_render(self, task)
+        return original_render(self, task, context)
 
     db_path = str(tmp_path / "test.db")
     with patch.object(AsyncMailer, "render_task_message", tracked_render):

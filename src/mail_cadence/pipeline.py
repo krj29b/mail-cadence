@@ -48,6 +48,8 @@ from mail_cadence.models import (
     MailConfiguration,
     MailTask,
     RecipientResult,
+    SendContext,
+    SendKind,
     Settings,
     TaskExecutionResult,
     TaskExecutionStatus,
@@ -273,6 +275,9 @@ def _plan(run: _Run, loaded: _LoadedConfig) -> _Plan:
                 window_start=start,
                 window_end=end,
                 schedule_version=loaded.schedule_versions.get(task.schedule_ref),
+                send_context=_send_context(
+                    task.id, "window", loaded.work_schedules, instance, run.ref_dt
+                ),
             )
         )
         if result.status == ClaimStatus.CLAIMED and result.claim is not None:
@@ -470,8 +475,9 @@ def _message_for(repo: DatabaseRepository, mailer: AsyncMailer, claim: Claim) ->
     stored = repo.pinned_message(claim.execution_id)
     if stored is not None:
         return stored
+    context = repo.send_context(claim.execution_id, repo.get_work_schedules().timezone)
     try:
-        rendered = mailer.render_task_message(repo.pinned_task(claim))
+        rendered = mailer.render_task_message(repo.pinned_task(claim), context)
     except RENDER_ERRORS as exc:
         logger.error(f"Failed to render execution {claim.execution_id}: {exc}")
         repo.abort_execution(claim, f"Template rendering error: {exc}")
@@ -513,7 +519,8 @@ async def dispatch_single_task(
     """
     with closing(get_connection(db_path)) as conn:
         repo = DatabaseRepository(conn)
-        if repo.get_mail_task(task_id) is None:
+        task = repo.get_mail_task(task_id)
+        if task is None:
             msg = f"Task '{task_id}' does not exist"
             raise LookupError(msg)
         run_id = str(uuid.uuid4())
@@ -522,7 +529,10 @@ async def dispatch_single_task(
         repo.start_run(run_id, "manual")
         repo.recover_abandoned()
         key = f"manual:{idempotency_key or run_id}"
-        claimed = repo.claim_execution(ClaimRequest(task_id, key, run_id, run.owner))
+        context = manual_send_context(task, repo.get_work_schedules())
+        claimed = repo.claim_execution(
+            ClaimRequest(task_id, key, run_id, run.owner, send_context=context)
+        )
         result = await _manual_result(
             run, task_id, claimed.status, claimed.claim, claimed.execution_id
         )
@@ -561,6 +571,31 @@ async def _manual_result(
     return result
 
 
+# --- Send context ----------------------------------------------------------------
+
+
+def _send_context(
+    task_id: str,
+    kind: SendKind,
+    work_schedules: WorkSchedules,
+    instance: WindowInstance | None,
+    ref_dt: datetime | None,
+) -> SendContext:
+    """The context of a window occurrence: its logical bounds, not the shifted ones."""
+    window = (instance.start_utc, instance.end_utc) if instance is not None else None
+    at = ref_dt if ref_dt is not None else datetime.now(UTC)
+    return SendContext.build(task_id, kind, work_schedules.timezone, window, at)
+
+
+def manual_send_context(
+    task: MailTask, work_schedules: WorkSchedules, ref_dt: datetime | None = None
+) -> SendContext:
+    """Context of a manual send (Run, panel preview): the latest started occurrence
+    of the task's window, which is the open one inside a window."""
+    instance = TaskScheduler(work_schedules).last_window_instance(task.schedule_ref, ref_dt)
+    return _send_context(task.id, "manual", work_schedules, instance, ref_dt)
+
+
 # --- Dry run ---------------------------------------------------------------------------
 
 
@@ -579,8 +614,10 @@ def _simulate(
     batch_id = str(uuid.uuid4())
     scheduled, results = _plan_simulation(repo, loaded, options.ref_dt, batch_id)
     logger.info(f"Simulating {len(scheduled)} tasks ({len(results)} skipped).")
-    for task in sorted(scheduled, key=lambda t: (PRIORITY_ORDER[t.priority], t.id)):
-        result = _simulate_task(mailer, task)
+    for task, context in sorted(
+        scheduled, key=lambda item: (PRIORITY_ORDER[item[0].priority], item[0].id)
+    ):
+        result = _simulate_task(mailer, task, context)
         repo.log_task_execution(result, batch_id=batch_id, dry_run=True, executed_at=options.ref_dt)
         results.append(result)
     report = aggregate_summary_report(results, start_time, datetime.now(UTC))
@@ -597,15 +634,16 @@ def _simulate(
 
 def _plan_simulation(
     repo: DatabaseRepository, loaded: _LoadedConfig, ref_dt: datetime | None, batch_id: str
-) -> tuple[list[MailTask], list[TaskExecutionResult]]:
+) -> tuple[list[tuple[MailTask, SendContext]], list[TaskExecutionResult]]:
     scheduler = TaskScheduler(loaded.work_schedules)
-    scheduled: list[MailTask] = []
+    scheduled: list[tuple[MailTask, SendContext]] = []
     skipped: list[TaskExecutionResult] = []
     for task in loaded.mail_config.tasks:
         instance = scheduler.window_instance(task.schedule_ref, ref_dt)
         preview = repo.peek_claim(task.id, instance.key) if instance else None
         if instance is not None and preview is not None and preview.status == ClaimStatus.CLAIMED:
-            scheduled.append(task)
+            context = _send_context(task.id, "window", loaded.work_schedules, instance, ref_dt)
+            scheduled.append((task, context))
             continue
         if instance is None or preview is None:
             reason, status = _inactive_reason(scheduler, task), TaskExecutionStatus.SKIPPED_SCHEDULE
@@ -626,12 +664,14 @@ def _simulated_skip(preview: ClaimResult) -> tuple[str, TaskExecutionStatus]:
     return "already executed in this window", TaskExecutionStatus.SKIPPED_SCHEDULE
 
 
-def _simulate_task(mailer: AsyncMailer, task: MailTask) -> TaskExecutionResult:
+def _simulate_task(
+    mailer: AsyncMailer, task: MailTask, context: SendContext
+) -> TaskExecutionResult:
     """Render the message a real run would store; a rendering error fails the task."""
     started = time.monotonic()
     recipients = task.recipients.all_recipients
     try:
-        rendered = mailer.render_task_message(task)
+        rendered = mailer.render_task_message(task, context)
     except RENDER_ERRORS as exc:
         logger.error(f"Failed to render template for task {task.id}: {exc}")
         return TaskExecutionResult(

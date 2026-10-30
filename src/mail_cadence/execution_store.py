@@ -13,9 +13,10 @@ import json
 import sqlite3
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from email.utils import parseaddr
 from enum import StrEnum
+from zoneinfo import ZoneInfo
 
 from mail_cadence.database import to_utc_iso
 from mail_cadence.models import (
@@ -25,6 +26,7 @@ from mail_cadence.models import (
     Outcome,
     RecipientResult,
     Recipients,
+    SendContext,
 )
 
 Clock = Callable[[], datetime]
@@ -71,6 +73,8 @@ class ClaimRequest:
     window_start: datetime | None = None
     window_end: datetime | None = None
     schedule_version: int | None = None
+    # Stored with a new execution only; a takeover keeps the context it was claimed with.
+    send_context: SendContext | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,6 +165,40 @@ def task_from_definition(definition_json: str) -> MailTask:
 
 def _parse(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value) if value else None
+
+
+def send_context_to_json(context: SendContext) -> str:
+    """Stored form of a SendContext: instants in UTC (to_utc_iso), the day as ISO date."""
+    start, end = context.window_start, context.window_end
+    return json.dumps(
+        {
+            "task_id": context.task_id,
+            "kind": context.kind,
+            "timezone": context.timezone,
+            "window_start": to_utc_iso(start) if start is not None else None,
+            "window_end": to_utc_iso(end) if end is not None else None,
+            "date": context.date.isoformat(),
+        },
+        sort_keys=True,
+    )
+
+
+def send_context_from_json(raw: str) -> SendContext:
+    data = json.loads(raw)
+    kind = data["kind"]
+    if kind not in ("window", "manual"):
+        msg = f"Unknown send kind {kind!r}"
+        raise ValueError(msg)
+    tz = ZoneInfo(data["timezone"])
+    start, end = _parse(data["window_start"]), _parse(data["window_end"])
+    return SendContext(
+        task_id=data["task_id"],
+        kind=kind,
+        timezone=data["timezone"],
+        window_start=start.astimezone(tz) if start is not None else None,
+        window_end=end.astimezone(tz) if end is not None else None,
+        date=date.fromisoformat(data["date"]),
+    )
 
 
 def _backoff(attempt_count: int) -> timedelta:
@@ -283,8 +321,8 @@ class ExecutionStoreMixin:
             INSERT INTO task_executions
             (task_uid, dispatch_generation, window_key, task_version, schedule_version,
              window_start, window_end, run_id, state, owner, fencing_token, lease_expires_at,
-             created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'CLAIMED', ?, 1, ?, ?)
+             created_at, send_context_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'CLAIMED', ?, 1, ?, ?, ?)
             """,
             (
                 identity["uid"],
@@ -298,6 +336,7 @@ class ExecutionStoreMixin:
                 request.owner,
                 to_utc_iso(now + lease),
                 to_utc_iso(now),
+                send_context_to_json(request.send_context) if request.send_context else None,
             ),
         )
         execution_id = int(cursor.lastrowid or 0)
@@ -696,6 +735,32 @@ class ExecutionStoreMixin:
             (claim.task_uid, claim.task_version),
         ).fetchone()
         return task_from_definition(row["definition_json"])
+
+    def send_context(self, execution_id: int, timezone: str) -> SendContext:
+        """The context the execution's message is rendered with (``cadence``).
+
+        An execution claimed before migration 7 has none stored; its context is derived
+        from the window key, the stored window bounds and the claim time, in ``timezone``.
+        """
+        row = self.conn.execute(
+            "SELECT e.send_context_json, e.window_key, e.window_start, e.window_end, "
+            "e.created_at, i.task_id FROM task_executions e "
+            "JOIN task_identities i ON i.uid = e.task_uid WHERE e.execution_id = ?",
+            (execution_id,),
+        ).fetchone()
+        if row is None:
+            msg = f"Execution {execution_id} does not exist"
+            raise LookupError(msg)
+        if row["send_context_json"] is not None:
+            return send_context_from_json(row["send_context_json"])
+        start, end = _parse(row["window_start"]), _parse(row["window_end"])
+        return SendContext.build(
+            row["task_id"],
+            "manual" if row["window_key"].startswith("manual:") else "window",
+            timezone,
+            (start, end) if start is not None and end is not None else None,
+            datetime.fromisoformat(row["created_at"]),
+        )
 
     def pinned_message(self, execution_id: int) -> bytes | None:
         row = self.conn.execute(

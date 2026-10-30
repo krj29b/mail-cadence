@@ -6,6 +6,7 @@ import logging
 import re
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from email.message import EmailMessage
 from email.parser import BytesHeaderParser
 from email.utils import formatdate, make_msgid, parseaddr
@@ -30,6 +31,7 @@ from mail_cadence.models import (
     MailTask,
     Outcome,
     RecipientResult,
+    SendContext,
     Settings,
 )
 
@@ -142,9 +144,16 @@ class TemplateRenderer:
         template = self.env.get_template(self._resolve_loader_name(template_path))
         return template.render(**context)
 
-    def render_task_body(self, task: MailTask) -> str:
-        """Render a task's body; raises EmptyBodyError if it contains no visible text."""
-        body = self.render(task.body_template.template_path, task.get_context_dict())
+    def render_task_body(self, task: MailTask, context: SendContext | None = None) -> str:
+        """Render a task's body; raises EmptyBodyError if it contains no visible text.
+
+        The template sees ``context`` as ``cadence``; a task variable named ``cadence``
+        shadows it. Without ``context`` (library callers) it describes the current
+        moment in UTC with no window.
+        """
+        send = context or SendContext.build(task.id, "manual", "UTC", None, datetime.now(UTC))
+        variables: dict[str, Any] = {"cadence": send, **task.get_context_dict()}
+        body = self.render(task.body_template.template_path, variables)
         is_html = task.body_template.format.lower() == "html"
         visible_text = _html_to_plain_text(body) if is_html else body
         if not visible_text.strip():
@@ -417,9 +426,11 @@ class AsyncMailer:
             raise
         await self._release_client(client, pooled)
 
-    def render_task_message(self, task: MailTask) -> RenderedMessage:
+    def render_task_message(
+        self, task: MailTask, context: SendContext | None = None
+    ) -> RenderedMessage:
         """Render and serialise a task message; raises one of RENDER_ERRORS on failure."""
-        body = self.renderer.render_task_body(task)
+        body = self.renderer.render_task_body(task, context)
         msg = build_email_message(task, body, default_sender=self.settings.smtp_user)
         return RenderedMessage(str(msg["Message-ID"]), msg.as_bytes(policy=SNAPSHOT_POLICY))
 

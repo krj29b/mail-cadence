@@ -1,7 +1,7 @@
 import os
 import re
 from dataclasses import dataclass
-from datetime import datetime, time
+from datetime import date, datetime, time
 from email.utils import getaddresses
 from enum import StrEnum
 from functools import cached_property, lru_cache
@@ -61,6 +61,44 @@ class RecipientResult:
     outcome: Outcome
     code: int | None = None
     message: str | None = None
+
+
+SendKind = Literal["window", "manual"]
+
+
+@dataclass(frozen=True, slots=True)
+class SendContext:
+    """What a task message is sent for; templates see it as ``cadence``.
+
+    Built once per execution, when it is claimed, and stored with it, so every render
+    of the execution (also after a takeover) uses the same values. ``window_start`` and
+    ``window_end`` are aware datetimes in ``timezone``; ``date`` is the local day the
+    window occurrence started on, or the local day of the claim when the schedule has
+    no window.
+    """
+
+    task_id: str
+    kind: SendKind
+    timezone: str
+    window_start: datetime | None
+    window_end: datetime | None
+    date: date
+
+    @classmethod
+    def build(
+        cls,
+        task_id: str,
+        kind: SendKind,
+        timezone: str,
+        window: tuple[datetime, datetime] | None,
+        at: datetime,
+    ) -> Self:
+        """``window`` is the occurrence as UTC instants; ``at`` the moment of the claim."""
+        tz = ZoneInfo(timezone)
+        if window is None:
+            return cls(task_id, kind, timezone, None, None, at.astimezone(tz).date())
+        start, end = (instant.astimezone(tz) for instant in window)
+        return cls(task_id, kind, timezone, start, end, start.date())
 
 
 class TaskExecutionStatus(StrEnum):

@@ -57,7 +57,12 @@ from mail_cadence.models import (
     Settings,
     WorkSchedules,
 )
-from mail_cadence.pipeline import DispatchOptions, dispatch_single_task, run_dispatch
+from mail_cadence.pipeline import (
+    DispatchOptions,
+    dispatch_single_task,
+    manual_send_context,
+    run_dispatch,
+)
 from mail_cadence.repository import DatabaseRepository
 from mail_cadence.scheduler import TaskScheduler
 
@@ -769,7 +774,9 @@ def preview_task(
     renderer = TemplateRenderer(template_dir=template_dir)
 
     try:
-        rendered = renderer.render_task_body(task)
+        # The context the Run button would use now (latest started window occurrence).
+        context = manual_send_context(task, repo.get_work_schedules())
+        rendered = renderer.render_task_body(task, context)
     except (ValueError, jinja2.TemplateNotFound, jinja2.TemplateError, FileNotFoundError) as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
