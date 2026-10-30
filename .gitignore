@@ -118,3 +118,6 @@ _plans/
 # Web panel asset build (make assets)
 frontend/node_modules/
 plan/gpt6_audyt_01.md
+
+# Local planning notes
+plans/
