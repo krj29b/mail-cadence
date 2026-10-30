@@ -10,7 +10,7 @@ import pytest
 from pydantic import ValidationError
 from typer.testing import CliRunner
 
-from mail_cadence.cli import app, run_dispatch_pipeline, setup_logging
+from mail_cadence.cli import TEXT_LOG_FORMAT, app, run_dispatch_pipeline, setup_logging
 from mail_cadence.mailer import AsyncMailer, RenderedMessage
 from mail_cadence.models import MailTask, Outcome, RecipientResult
 from mail_cadence.scheduler import TokenBucketRateLimiter
@@ -39,10 +39,12 @@ def test_setup_logging(verbose: bool, expected_level: int) -> None:
         mock_basic_config.assert_called_once()
         _, kwargs = mock_basic_config.call_args
         assert kwargs["level"] == expected_level
-        assert kwargs["format"] == "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+        assert "force" not in kwargs
         handlers = kwargs["handlers"]
         assert len(handlers) == 1
         assert isinstance(handlers[0], logging.StreamHandler)
+        assert handlers[0].formatter is not None
+        assert handlers[0].formatter._fmt == TEXT_LOG_FORMAT
         assert handlers[0].stream == sys.stdout
 
 

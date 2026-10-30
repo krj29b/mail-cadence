@@ -1,6 +1,9 @@
+import contextlib
 import io
 import json
 import logging
+from collections.abc import Iterator
+from typing import Literal
 from unittest.mock import patch
 
 import pytest
@@ -61,22 +64,50 @@ def test_json_formatter_with_exception() -> None:
         logger.removeHandler(handler)
 
 
-def test_setup_logging_text_and_json(capsys: pytest.CaptureFixture[str]) -> None:
-    setup_logging(verbose=False, log_format="text")
-    logging.info("Text log message")
+@contextlib.contextmanager
+def bare_root_logger() -> Iterator[logging.Logger]:
+    """The root logger without handlers, as in a fresh CLI process; restored afterwards.
 
-    setup_logging(verbose=False, log_format="json")
-    logging.info("JSON log message Zażółć")
+    Used inside the test body: pytest adds its capture handlers to the root logger when
+    the test call starts, after fixtures have run.
+    """
+    root = logging.getLogger()
+    saved_handlers, saved_level = root.handlers[:], root.level
+    root.handlers = []
+    try:
+        yield root
+    finally:
+        for handler in root.handlers:
+            handler.close()
+        root.handlers = saved_handlers
+        root.setLevel(saved_level)
 
-    captured = capsys.readouterr()
-    lines = [line for line in captured.out.splitlines() if line]
 
-    assert len(lines) >= 2
-    # The last log line should be JSON
-    json_line = lines[-1]
-    data = json.loads(json_line)
-    assert data["message"] == "JSON log message Zażółć"
-    assert data["level"] == "INFO"
+@pytest.mark.parametrize("log_format", ["text", "json"])
+def test_setup_logging_writes_the_chosen_format(
+    capsys: pytest.CaptureFixture[str], log_format: Literal["text", "json"]
+) -> None:
+    with bare_root_logger():
+        setup_logging(verbose=False, log_format=log_format)
+        logging.getLogger("mail_cadence.test").info("Log message Zażółć")
+
+    line = capsys.readouterr().out.strip()
+    if log_format == "json":
+        data = json.loads(line)
+        assert data["message"] == "Log message Zażółć"
+        assert data["level"] == "INFO"
+    else:
+        assert line.endswith("[INFO] mail_cadence.test: Log message Zażółć")
+
+
+def test_setup_logging_keeps_the_handlers_of_an_embedding_application() -> None:
+    with bare_root_logger() as root:
+        host_handler = logging.StreamHandler(io.StringIO())
+        root.addHandler(host_handler)
+
+        setup_logging(log_format="json")
+
+        assert root.handlers == [host_handler]
 
 
 def test_settings_log_format_validation() -> None:

@@ -6,7 +6,7 @@ import sys
 from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated, Literal
 
 import typer
 from pydantic import ValidationError
@@ -55,11 +55,15 @@ def version_callback(value: bool) -> None:
         raise typer.Exit(code=0)
 
 
+TEXT_LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+
+
 class JsonFormatter(logging.Formatter):
+    """One JSON object per line: timestamp (UTC), level, logger, message, exception."""
+
     def format(self, record: logging.LogRecord) -> str:
-        dt = datetime.fromtimestamp(record.created, UTC)
-        data: dict[str, Any] = {
-            "timestamp": to_utc_iso(dt),
+        data = {
+            "timestamp": to_utc_iso(datetime.fromtimestamp(record.created, UTC)),
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),
@@ -69,23 +73,16 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(data, ensure_ascii=False)
 
 
-def setup_logging(verbose: bool = False, log_format: str = "text") -> None:
-    level = logging.DEBUG if verbose else logging.INFO
+def setup_logging(verbose: bool = False, log_format: Literal["text", "json"] = "text") -> None:
+    """Log to stdout, unless the root logger already has handlers.
+
+    No ``force``: an application that embeds mail-cadence (``run_dispatch_pipeline``)
+    keeps its own logging configuration.
+    """
     handler = logging.StreamHandler(sys.stdout)
-    if log_format.lower() == "json":
-        handler.setFormatter(JsonFormatter())
-        logging.basicConfig(
-            level=level,
-            handlers=[handler],
-            force=True,
-        )
-    else:
-        logging.basicConfig(
-            level=level,
-            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-            handlers=[handler],
-            force=True,
-        )
+    formatter = JsonFormatter() if log_format == "json" else logging.Formatter(TEXT_LOG_FORMAT)
+    handler.setFormatter(formatter)
+    logging.basicConfig(level=logging.DEBUG if verbose else logging.INFO, handlers=[handler])
 
 
 async def run_dispatch_pipeline(
