@@ -1,5 +1,5 @@
 Hello {{ region | default('Valued Customer', true) }},
 
-This is an automated operational dispatch email for {{ report_date | default('today', true) }}.
+This is an automated operational dispatch email for {% if report_date is defined and report_date %}{{ report_date }}{% elif cadence is defined %}{{ cadence.date | date('%Y-%m-%d') }}{% else %}today{% endif %}.
 
 Thank you for using our service.

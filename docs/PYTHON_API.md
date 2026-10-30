@@ -5,7 +5,6 @@ In addition to the CLI and XML workflows, external Python scripts (e.g., data pi
 ```python
 import asyncio
 from contextlib import closing
-from datetime import date
 
 from mail_cadence.database import get_connection, init_db
 from mail_cadence.models import BodyTemplate, ContextVar, MailTask, Recipients, Settings
@@ -28,7 +27,10 @@ def update_daily_report_task(metrics: dict[str, str]) -> None:
             max_retries=3,
             sender="ops-noreply@example.com",
             recipients=Recipients(to=["admin-team@example.com"]),
-            subject=f"Daily System Digest — {date.today().isoformat()}",
+            # The date comes from the send context, not from today's date at save
+            # time: see CONFIGURATION.md, Send Variables.
+            subject="Daily System Digest - {{ cadence.date }}",
+            render_subject=True,
             body_template=BodyTemplate(
                 format="html",
                 template_path="daily_digest.html.j2",
@@ -46,7 +48,6 @@ async def main() -> None:
     # 1. Inject dynamic values computed by an upstream pipeline
     update_daily_report_task(
         {
-            "report_date": date.today().isoformat(),
             "disk_usage_pct": "68.4%",
             "anomalies_detected": "0",
         }
@@ -63,3 +64,5 @@ if __name__ == "__main__":
 ```
 
 The exit codes are listed in [OPERATIONS.md](OPERATIONS.md#exit-codes).
+
+To render a message outside a dispatch, for example to check a template, call `AsyncMailer.render_task_message(task, context)` with `pipeline.manual_send_context(task, repo.get_work_schedules())`, the values the **Run** button would use. Without `context` the message is rendered for the current moment in UTC with no window.

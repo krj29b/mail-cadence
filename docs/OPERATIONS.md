@@ -76,7 +76,7 @@ Until every `UNKNOWN` recipient of an execution has a decision, the task is not 
 
 ## Manual Sends
 
-The **Run** button on the Tasks page sends a task once per page load: clicking again reports the same send; reload the page to send it again. A manual send ignores the schedule window, but not another worker sending the same task or an unresolved unknown outcome.
+The **Run** button on the Tasks page sends a task once per page load: clicking again reports the same send; reload the page to send it again. A manual send ignores the schedule window, but not another worker sending the same task or an unresolved unknown outcome. Its `cadence` values come from the open window occurrence, or the one that started last, so a missed report sent by hand carries the date of the period it covers (see [Send Variables](CONFIGURATION.md#send-variables-cadence)). The task's **Preview** page shows the subject and these values before sending; the execution page shows what an execution was sent for.
 
 ## Log Shipping (Loki / ELK)
 

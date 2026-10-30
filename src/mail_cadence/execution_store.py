@@ -157,6 +157,7 @@ def task_from_definition(definition_json: str) -> MailTask:
         schedule_ref=d["schedule_ref"],
         sender=d["sender"],
         subject=d["subject"],
+        render_subject=bool(d.get("render_subject", False)),
         recipients=Recipients(**recipients),
         body_template=BodyTemplate(format=d["body_format"], template_path=d["body_template_path"]),
         context_variables=[ContextVar(name=n, value=v) for n, v in d["context_variables"]],

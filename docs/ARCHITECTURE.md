@@ -210,7 +210,7 @@ Data structures map directly between XML elements, Pydantic objects, and SQLite 
 | --- | --- | --- | --- |
 | `MailConfiguration` | `<MailConfiguration>` | Multi-table container | Root object containing `ReportSettings` and list of `MailTask` instances. |
 | `ReportSettings` | `<ReportSettings>` | `report_settings` | Single-row singleton table (`id = 1`). |
-| `MailTask` | `<MailTask>` | `tasks`, `task_recipients`, `task_context_variables` | XML attributes: `id`, `max_retries`, `priority`, `schedule_ref`. Elements: `Sender`, `Recipients` (`To`, `Cc`, `Bcc`), `Subject`, `BodyTemplate`, `ContextVariables` (`Var`). |
+| `MailTask` | `<MailTask>` | `tasks`, `task_recipients`, `task_context_variables` | XML attributes: `id`, `max_retries`, `priority`, `schedule_ref`, `render_subject` (default `false`). Elements: `Sender`, `Recipients` (`To`, `Cc`, `Bcc`), `Subject`, `BodyTemplate`, `ContextVariables` (`Var`). |
 | `WorkSchedules` | `<WorkSchedules>` | `work_schedules_meta`, `schedules` | Root container with `timezone` attribute mapping to `work_schedules_meta.timezone` (`id = 1`). |
 | `Schedule` | `<Schedule>` | `schedules` | XML attribute: `id`, `description`. Contains list of `HourWindow` objects. |
 | `HourWindow` | `<HourWindow>` | `hour_windows` | Attributes: `start`, `end`, `days_of_week`, `max_concurrency`, `rate_limit_per_min`. Both ends are inclusive; `end="24:00"` means the end of the day. FK to `schedules.id` (`ON DELETE CASCADE`). |
@@ -222,6 +222,7 @@ Data structures map directly between XML elements, Pydantic objects, and SQLite 
 | `MailTask.priority` | `EmailPriority`: `high`, `normal` or `low` (case-insensitive on input). |
 | `MailTask.max_retries` | Integer `0..10` (`MAX_RETRIES_LIMIT`); attempts = `max_retries + 1`. |
 | `MailTask` recipients | At least one address across `To`, `Cc` and `Bcc`. |
+| `MailTask.subject` | No line breaks. With `render_subject`, the rendered subject must also be one non-empty line of at most 255 characters (`mailer.SubjectRenderError`). |
 | Addresses (`Sender`, `To`, `Cc`, `Bcc`, report `Recipient`/`Sender`) | Exactly one address per entry, bare (`a@example.com`) or with a display name (`Ann <a@example.com>`). An empty task `Sender` falls back to `SMTP_USER`. |
 | `MailTask.schedule_ref` | Must reference an existing schedule: XML import fails cross-reference validation, the panel returns `400`. |
 | `HourWindow.end` | `HH:MM[:SS]` or `24:00`. A window `00:00`-`23:59` leaves the last minute of the day uncovered; use `24:00`. |
@@ -328,7 +329,7 @@ Duplicate dispatches are prevented by durable execution state ([ADR 0001](adr/00
 
 - `TaskScheduler.window_instance` returns the window occurrence active at the reference time as UTC instants; its key is `"{schedule_id}@{start UTC}"`.
 - A real run claims every task for `(task identity, dispatch generation, window key)` (`DatabaseRepository.claim_execution`, `BEGIN IMMEDIATE`). A finished execution for that key skips the task (`SKIPPED_SCHEDULE`, "already executed in this window"); an execution owned by another live worker skips it as `SKIPPED_BUSY`. At most one execution per task is owned at a time. While any other execution of the task has a recipient in `UNKNOWN` (or still `IN_FLIGHT`), no new execution is created and the task is skipped as `SKIPPED_BUSY` with exit code 3 (`ClaimStatus.REVIEW`), whatever the window key, generation or manual idempotency key.
-- The message is rendered from the pinned task version and stored before the first attempt. Attempts select only recipients that are due; results are stored per recipient. Accepted and 5xx recipients are never attempted again, 4xx ones are retried within the budget, no attempt starts after the window end, and an unknown outcome is never retried automatically.
+- The message is rendered from the pinned task version and stored before the first attempt. It is rendered with the send context stored at claim (`task_executions.send_context_json`, templates: `cadence`): the window occurrence for a scheduled send, the latest started occurrence for a manual send (`pipeline.manual_send_context`, also used by the dry run's and the panel's previews). A takeover never replaces it. Attempts select only recipients that are due; results are stored per recipient. Accepted and 5xx recipients are never attempted again, 4xx ones are retried within the budget, no attempt starts after the window end, and an unknown outcome is never retried automatically.
 - A worker renews its lease every minute; an execution whose lease expired is recovered at the start of the next run: in-flight recipients become `UNKNOWN` (execution `NEEDS_REVIEW`) and block the task as described above. If the old worker later receives the SMTP replies, they are stored only as a `late_result` event for the operator (`record_late_result`), never as a result.
 - Dry runs read this state (`peek_claim`) and never write it; their logs carry `dry_run = 1`.
 - Saving a changed task starts a new dispatch generation (the window can be sent again with the new version) unless `reset_window_state=False`; "Allow Resend" (`POST /tasks/{id}/reset-window`) starts a new generation without a new version.

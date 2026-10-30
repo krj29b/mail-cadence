@@ -212,7 +212,7 @@ class DatabaseRepository(ReportStoreMixin, ExecutionViewsMixin):
         task_rows = self.conn.execute(
             """
             SELECT id, max_retries, priority, schedule_ref, sender, subject,
-                   body_format, body_template_path
+                   body_format, body_template_path, render_subject
             FROM tasks
             WHERE (? IS NULL OR id = ?)
             ORDER BY id
@@ -269,6 +269,7 @@ class DatabaseRepository(ReportStoreMixin, ExecutionViewsMixin):
             sender=row["sender"],
             recipients=Recipients(to=recipients["to"], cc=recipients["cc"], bcc=recipients["bcc"]),
             subject=row["subject"],
+            render_subject=bool(row["render_subject"]),
             body_template=BodyTemplate(
                 format=row["body_format"], template_path=row["body_template_path"]
             ),
@@ -332,8 +333,8 @@ class DatabaseRepository(ReportStoreMixin, ExecutionViewsMixin):
             """
             INSERT INTO tasks
             (id, max_retries, priority, schedule_ref, sender, subject,
-             body_format, body_template_path)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+             body_format, body_template_path, render_subject)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 max_retries = excluded.max_retries,
                 priority = excluded.priority,
@@ -341,7 +342,8 @@ class DatabaseRepository(ReportStoreMixin, ExecutionViewsMixin):
                 sender = excluded.sender,
                 subject = excluded.subject,
                 body_format = excluded.body_format,
-                body_template_path = excluded.body_template_path
+                body_template_path = excluded.body_template_path,
+                render_subject = excluded.render_subject
             """,
             (
                 task.id,
@@ -352,6 +354,7 @@ class DatabaseRepository(ReportStoreMixin, ExecutionViewsMixin):
                 task.subject,
                 task.body_template.format,
                 task.body_template.template_path,
+                int(task.render_subject),
             ),
         )
 

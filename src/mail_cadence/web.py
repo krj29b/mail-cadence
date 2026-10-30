@@ -645,6 +645,7 @@ def _build_task_from_form_dict(form_dict: dict[str, Any], default_sender: str = 
     priority = _parse_priority(str(form_dict.get("priority", "normal")))
     max_retries = int(form_dict.get("max_retries", 3))
     subject = str(form_dict.get("subject", ""))
+    render_subject = form_dict.get("render_subject") in ("true", "1", "on")
     body_format = str(form_dict.get("body_format", "html"))
     body_template_path = str(form_dict.get("body_template_path", ""))
 
@@ -663,6 +664,7 @@ def _build_task_from_form_dict(form_dict: dict[str, Any], default_sender: str = 
         sender=sender,
         recipients=Recipients(to=to_list, cc=cc_list, bcc=bcc_list),
         subject=subject,
+        render_subject=render_subject,
         body_template=BodyTemplate(
             format=body_format,
             template_path=body_template_path,
@@ -755,6 +757,44 @@ def delete_task(
             detail=f"Task '{task_id}' not found",
         )
     return HTMLResponse("")
+
+
+@router.get("/tasks/{task_id}/message", response_class=HTMLResponse)
+def task_message_page(
+    task_id: str,
+    request: Request,
+    repo: DatabaseRepository = Depends(get_repo),
+) -> Response:
+    """What the Run button would send now: subject, recipients and send context.
+
+    The body opens in the sandboxed preview (``/tasks/{id}/preview``), which this page
+    links to; the panel's CSP does not allow framing it.
+    """
+    task = repo.get_mail_task(task_id)
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Task '{task_id}' not found",
+        )
+    send_context = manual_send_context(task, repo.get_work_schedules())
+    renderer = TemplateRenderer(template_dir=getattr(request.app.state, "template_dir", "."))
+    subject: str | None = None
+    subject_error: str | None = None
+    try:
+        subject = renderer.render_task_subject(task, send_context)
+    except (ValueError, jinja2.TemplateError) as exc:
+        subject_error = str(exc)
+    return templates.TemplateResponse(
+        request=request,
+        name="task_message.html",
+        context={
+            "active_page": "tasks",
+            "task": task,
+            "subject": subject,
+            "subject_error": subject_error,
+            "send_context": send_context,
+        },
+    )
 
 
 @router.get("/tasks/{task_id}/preview")

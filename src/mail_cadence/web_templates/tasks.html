@@ -99,6 +99,26 @@
           <label for="subject" class="block text-xs font-medium text-slate-300 mb-1">Subject *</label>
           <input type="text" id="subject" name="subject" required placeholder="Email Subject" value="{{ edit_task.subject if edit_task else '' }}"
                  class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
+          <div class="flex items-start gap-3 mt-2">
+            <div class="flex items-center h-5">
+              <input type="checkbox" id="render_subject" name="render_subject" value="true"
+                     {% if edit_task and edit_task.render_subject %}checked{% endif %}
+                     class="w-4 h-4 rounded bg-slate-950 border-slate-700 text-indigo-600 focus:ring-indigo-500 focus:ring-offset-slate-900">
+            </div>
+            <div>
+              <label for="render_subject" class="text-xs font-medium text-slate-200 cursor-pointer">
+                Subject is a template
+              </label>
+              <p class="text-[11px] text-slate-500 mt-0.5">
+                Subject and body can use <code>cadence.date</code>, <code>cadence.window_start</code>,
+                <code>cadence.window_end</code>, <code>cadence.kind</code>, <code>cadence.task_id</code>,
+                <code>cadence.timezone</code> and the filters <code>date</code>, <code>add_days</code>,
+                <code>add_months</code>, <code>month_start</code>, e.g.
+                <code>Report {{ '{{' }} cadence.date | add_days(-1) | date("%d.%m.%Y") {{ '}}' }}</code>.
+                The rendered subject must be one line of at most 255 characters.
+              </p>
+            </div>
+          </div>
         </div>
 
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -324,7 +344,7 @@
                 <span>Allow Resend</span>
               </button>
               {% endif %}
-              <a href="/tasks/{{ task.id | urlencode }}/preview" rel="noopener noreferrer" target="_blank"
+              <a href="/tasks/{{ task.id | urlencode }}/message"
                  class="inline-flex items-center gap-1 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 px-2 py-1 rounded text-xs transition-colors">
                 <i data-lucide="eye" class="w-3 h-3"></i>
                 <span>Preview</span>

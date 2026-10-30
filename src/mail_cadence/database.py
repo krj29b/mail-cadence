@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     last_run DATETIME,
     last_status TEXT,
     last_error TEXT,
+    render_subject INTEGER NOT NULL DEFAULT 0 CHECK (render_subject IN (0, 1)),
     FOREIGN KEY (schedule_ref) REFERENCES schedules(id) ON DELETE RESTRICT
 );
 
@@ -336,6 +337,16 @@ def _canonical_json(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
+_TASK_DEFINITION_SQL_BEFORE_8 = (
+    "SELECT id, max_retries, priority, schedule_ref, sender, subject, body_format, "
+    "body_template_path FROM tasks"
+)
+_TASK_DEFINITION_SQL = (
+    "SELECT id, max_retries, priority, schedule_ref, sender, subject, body_format, "
+    "body_template_path, render_subject FROM tasks"
+)
+
+
 def _task_definitions(conn: sqlite3.Connection) -> dict[str, str]:
     """Canonical JSON of every stored task definition, keyed by task id (3 bulk queries)."""
     recipients: dict[str, list[list[str]]] = defaultdict(list)
@@ -349,11 +360,14 @@ def _task_definitions(conn: sqlite3.Connection) -> dict[str, str]:
     ):
         context[row["task_id"]].append([row["var_name"], row["var_value"]])
     definitions: dict[str, str] = {}
-    for row in conn.execute(
-        "SELECT id, max_retries, priority, schedule_ref, sender, subject, body_format, "
-        "body_template_path FROM tasks"
-    ):
+    # Migration 5 syncs definitions before migration 8 adds render_subject.
+    has_render_subject = "render_subject" in _column_names(conn, "tasks")
+    query = _TASK_DEFINITION_SQL if has_render_subject else _TASK_DEFINITION_SQL_BEFORE_8
+    for row in conn.execute(query):
         task: dict[str, object] = dict(zip(row.keys(), tuple(row), strict=True))
+        # Present only when on, so definitions stored before it keep their exact JSON.
+        if task.pop("render_subject", 0):
+            task["render_subject"] = True
         task["recipients"] = recipients[row["id"]]
         task["context_variables"] = context[row["id"]]
         definitions[row["id"]] = _canonical_json(task)
@@ -603,6 +617,15 @@ def _migrate_send_context(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE task_executions ADD COLUMN send_context_json TEXT")
 
 
+def _migrate_render_subject(conn: sqlite3.Connection) -> None:
+    """8: a task can render its subject as a template (off for existing tasks)."""
+    if "render_subject" not in _column_names(conn, "tasks"):
+        conn.execute(
+            "ALTER TABLE tasks ADD COLUMN render_subject INTEGER NOT NULL DEFAULT 0 "
+            "CHECK (render_subject IN (0, 1))"
+        )
+
+
 MIGRATIONS: tuple[Callable[[sqlite3.Connection], None], ...] = (
     _migrate_base_schema,
     _migrate_task_validation,
@@ -611,6 +634,7 @@ MIGRATIONS: tuple[Callable[[sqlite3.Connection], None], ...] = (
     _migrate_execution_state,
     _migrate_legacy_window_state,
     _migrate_send_context,
+    _migrate_render_subject,
 )
 SCHEMA_VERSION = len(MIGRATIONS)
 

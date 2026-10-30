@@ -26,6 +26,7 @@ from jinja2 import (
     TemplateNotFound,
     select_autoescape,
 )
+from jinja2.sandbox import SandboxedEnvironment
 
 from mail_cadence.models import (
     MailTask,
@@ -48,6 +49,9 @@ INTERNAL_TEMPLATES: frozenset[str] = frozenset({"report_email.html.j2", "report_
 # select_autoescape() only matches the end of the file name, so compound
 # extensions such as ".html.j2" must be listed explicitly.
 AUTOESCAPE_EXTENSIONS: tuple[str, ...] = ("html", "htm", "xml", "html.j2", "htm.j2", "xml.j2")
+
+# Longest subject a subject template may render (plans: send variables, decision 2026-10-30).
+SUBJECT_MAX_LENGTH = 255
 
 SMTP_PERMANENT_ERROR_MIN = 500
 SMTP_PERMANENT_ERROR_MAX = 600
@@ -123,6 +127,11 @@ class TemplateRenderer:
             ),
         )
         register_date_filters(self.env)
+        # Subject templates come from the task definition (panel form, XML), not from
+        # template_dir: sandboxed, and not HTML-escaped, since a header is not HTML
+        # (autoescape would send "&amp;"). Header injection is checked after rendering.
+        self.subject_env = SandboxedEnvironment(undefined=StrictUndefined, autoescape=False)
+        register_date_filters(self.subject_env)
 
     def _resolve_loader_name(self, template_path: str) -> str:
         if template_path.startswith(BUILTIN_TEMPLATE_PREFIX):
@@ -146,16 +155,19 @@ class TemplateRenderer:
         template = self.env.get_template(self._resolve_loader_name(template_path))
         return template.render(**context)
 
-    def render_task_body(self, task: MailTask, context: SendContext | None = None) -> str:
-        """Render a task's body; raises EmptyBodyError if it contains no visible text.
+    @staticmethod
+    def _variables(task: MailTask, context: SendContext | None) -> dict[str, Any]:
+        """Template variables: ``cadence`` first, so a task variable of that name shadows it.
 
-        The template sees ``context`` as ``cadence``; a task variable named ``cadence``
-        shadows it. Without ``context`` (library callers) it describes the current
-        moment in UTC with no window.
+        Without ``context`` (library callers) ``cadence`` describes the current moment
+        in UTC with no window.
         """
         send = context or SendContext.build(task.id, "manual", "UTC", None, datetime.now(UTC))
-        variables: dict[str, Any] = {"cadence": send, **task.get_context_dict()}
-        body = self.render(task.body_template.template_path, variables)
+        return {"cadence": send, **task.get_context_dict()}
+
+    def render_task_body(self, task: MailTask, context: SendContext | None = None) -> str:
+        """Render a task's body; raises EmptyBodyError if it contains no visible text."""
+        body = self.render(task.body_template.template_path, self._variables(task, context))
         is_html = task.body_template.format.lower() == "html"
         visible_text = _html_to_plain_text(body) if is_html else body
         if not visible_text.strip():
@@ -163,9 +175,37 @@ class TemplateRenderer:
             raise EmptyBodyError(msg)
         return body
 
+    def render_task_subject(self, task: MailTask, context: SendContext | None = None) -> str:
+        """The subject: literal, or rendered when ``task.render_subject`` is set.
+
+        A rendered subject must be one non-empty line of at most SUBJECT_MAX_LENGTH
+        characters (SubjectRenderError otherwise); surrounding whitespace is dropped.
+        """
+        if not task.render_subject:
+            return task.subject
+        template = self.subject_env.from_string(task.subject)
+        subject = template.render(**self._variables(task, context)).strip()
+        if "\r" in subject or "\n" in subject:
+            msg = f"Subject template of task '{task.id}' rendered a line break"
+            raise SubjectRenderError(msg)
+        if not subject:
+            msg = f"Subject template of task '{task.id}' rendered an empty subject"
+            raise SubjectRenderError(msg)
+        if len(subject) > SUBJECT_MAX_LENGTH:
+            msg = (
+                f"Subject template of task '{task.id}' rendered {len(subject)} characters "
+                f"(at most {SUBJECT_MAX_LENGTH})"
+            )
+            raise SubjectRenderError(msg)
+        return subject
+
 
 class EmptyBodyError(ValueError):
     """A task template rendered no visible text; such a message is never sent."""
+
+
+class SubjectRenderError(ValueError):
+    """A subject template rendered an empty, multi-line or too long subject; never sent."""
 
 
 def _html_to_plain_text(html_str: str) -> str:
@@ -214,9 +254,11 @@ def build_email_message(
     task: MailTask,
     body_content: str,
     default_sender: str | None = None,
+    subject: str | None = None,
 ) -> EmailMessage:
+    """``subject`` is the rendered subject; without it the task's literal subject is used."""
     msg = new_email_message(
-        subject=task.subject,
+        subject=subject if subject is not None else task.subject,
         sender=task.sender or default_sender or "",
         to=task.recipients.to,
         cc=task.recipients.cc,
@@ -432,8 +474,12 @@ class AsyncMailer:
         self, task: MailTask, context: SendContext | None = None
     ) -> RenderedMessage:
         """Render and serialise a task message; raises one of RENDER_ERRORS on failure."""
-        body = self.renderer.render_task_body(task, context)
-        msg = build_email_message(task, body, default_sender=self.settings.smtp_user)
+        send = context or SendContext.build(task.id, "manual", "UTC", None, datetime.now(UTC))
+        subject = self.renderer.render_task_subject(task, send)
+        body = self.renderer.render_task_body(task, send)
+        msg = build_email_message(
+            task, body, default_sender=self.settings.smtp_user, subject=subject
+        )
         return RenderedMessage(str(msg["Message-ID"]), msg.as_bytes(policy=SNAPSHOT_POLICY))
 
     async def deliver(self, data: bytes, recipients: Sequence[str]) -> dict[str, RecipientResult]:

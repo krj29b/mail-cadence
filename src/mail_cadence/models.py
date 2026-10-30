@@ -181,6 +181,9 @@ class MailTask(BaseXmlModel, tag="MailTask"):
     max_retries: int = attr(default=3, ge=0, le=MAX_RETRIES_LIMIT)
     priority: EmailPriority = attr(default=EmailPriority.NORMAL)
     schedule_ref: str = attr()
+    # The subject is a Jinja template (cadence.*, filters); off by default so an
+    # existing subject containing '{{' keeps its literal meaning.
+    render_subject: bool = attr(default=False)
     sender: str = element(tag="Sender")
     recipients: Recipients = element(tag="Recipients")
     subject: str = element(tag="Subject")

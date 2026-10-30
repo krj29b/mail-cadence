@@ -10,3 +10,15 @@
     <span class="badge-skipped">{{ state }}</span>
   {%- endif -%}
 {%- endmacro %}
+
+{# What a message is sent for: the cadence values of a SendContext (or None). #}
+{% macro send_context_line(context) -%}
+  {%- if context -%}
+    Sent for {{ context.date.isoformat() }}
+    {%- if context.window_start %} &middot; window {{ context.window_start.strftime('%Y-%m-%d %H:%M') }}
+      &ndash; {{ context.window_end.strftime('%Y-%m-%d %H:%M') }}{% else %} &middot; no window{% endif %}
+    &middot; {{ context.timezone }} &middot; {{ "manual send" if context.kind == "manual" else "scheduled send" }}
+  {%- else -%}
+    Send context not stored (claimed before version 0.10)
+  {%- endif -%}
+{%- endmacro %}

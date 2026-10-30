@@ -1,5 +1,5 @@
 {% extends "layout.html" %}
-{% from "_macros.html" import state_badge %}
+{% from "_macros.html" import send_context_line, state_badge %}
 {% block title %}Execution #{{ execution.execution_id }} - MailCadence Admin{% endblock %}
 {% block content %}
 <div class="pb-2 border-b border-slate-800">
@@ -17,6 +17,9 @@
   <p class="text-xs text-slate-500 mt-1 font-mono">
     Message-ID: {{ execution.message_id or "not rendered" }}{% if execution.message_id and not execution.has_message %} (content removed after the retention period){% endif %}
     {% if execution.owner %}&middot; owner {{ execution.owner }} until {{ execution.lease_expires_at | utc_time }}{% endif %}
+  </p>
+  <p class="text-xs text-slate-400 mt-1 font-mono" data-testid="send-context">
+    {{ send_context_line(execution.send_context) }}
   </p>
 </div>
 

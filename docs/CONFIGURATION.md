@@ -40,3 +40,35 @@ The database schema is versioned (`PRAGMA user_version`). Existing databases are
 - A task whose template renders no visible text (empty file, or only empty tags) fails with `Template rendering error` and nothing is sent. The panel preview shows the same error. An email made only of images therefore needs some text, for example `alt` text in a paragraph.
 
 The XML format of tasks and schedules and the full list of validation rules are in [ARCHITECTURE.md](ARCHITECTURE.md#validation-rules); [`config/samples/`](../config/samples) holds a working example.
+
+## Send Variables (`cadence`)
+
+Every task template, and a subject with `render_subject` (below), sees the variable `cadence`. It describes what the message is sent for:
+
+| Variable | Value |
+| --- | --- |
+| `cadence.date` | The local day, in the schedules' timezone, on which the window occurrence started. A window `22:00`-`02:00` that started on 28 October gives `2026-10-28`, also at 01:00 on the 29th. |
+| `cadence.window_start`, `cadence.window_end` | Start and end of that occurrence as datetimes in the schedules' timezone. `None` only when the task's schedule has no window. |
+| `cadence.kind` | `window` for a scheduled send, `manual` for the **Run** button. |
+| `cadence.task_id`, `cadence.timezone` | The task id and the schedules' timezone name. |
+
+- A scheduled send uses the occurrence the run is in. A manual send (**Run**) and the panel's message page use the open occurrence, or else the one that started last: a nightly report sent by hand in the morning carries the night's date, a weekly window its last occurrence. A schedule without windows gives no window and the day of the send.
+- The values are stored with the execution when it is claimed. Retries, a takeover after a crash and the dry run render with the same values; the execution page shows them ("Sent for ..."). Executions claimed before version 0.10 have none stored and get values derived from their window and claim time.
+- A task variable named `cadence` shadows it.
+
+Filters for dates (each accepts a date or a datetime and returns the same type):
+
+| Filter | Result |
+| --- | --- |
+| `date(fmt="%Y-%m-%d")` | `strftime` text, for example `{{ cadence.date \| date("%d.%m.%Y") }}` |
+| `add_days(n)` | `n` days later (negative: earlier); a datetime keeps its local time |
+| `add_months(n)` | `n` months later; the day is clamped to the end of the month (31 March minus one month is 28 or 29 February) |
+| `month_start` | The first day of the month |
+
+Examples: yesterday `{{ cadence.date | add_days(-1) | date("%d.%m.%Y") }}`; the previous month `{{ cadence.date | month_start | add_months(-1) | date("%m.%Y") }}`. Month and day names (`%B`, `%A`) follow the locale of the process, so prefer numeric formats.
+
+### Subject Templates
+
+- Set `render_subject="true"` on `<MailTask>` (panel: **Subject is a template**) to render the subject with the same variables and filters, for example `<Subject>Daily report {{ cadence.date | add_days(-1) | date("%d.%m.%Y") }}</Subject>`. Without it the subject is sent as written, also when it contains `{{`.
+- The subject is rendered in a sandbox and is not HTML-escaped (`&` stays `&`). It must render to one non-empty line of at most 255 characters; otherwise, and for an undefined variable, the task fails with a template rendering error and nothing is sent. The panel's message page (**Preview** in the task list) shows the rendered subject or the error.
+- Turning the flag on or off changes the task definition, like any other edit.

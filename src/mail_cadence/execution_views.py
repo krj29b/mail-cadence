@@ -7,6 +7,8 @@ import json
 import sqlite3
 from typing import Any
 
+from mail_cadence.execution_store import send_context_from_json
+
 Row = dict[str, Any]
 
 
@@ -115,6 +117,8 @@ class ExecutionViewsMixin:
             return None
         detail = {k: execution[k] for k in execution.keys() if k != "message_bytes"}  # noqa: SIM118
         detail["has_message"] = execution["message_bytes"] is not None
+        raw_context = detail.pop("send_context_json")
+        detail["send_context"] = send_context_from_json(raw_context) if raw_context else None
         attempts = [
             dict(r)
             for r in self.conn.execute(

@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from fastapi.testclient import TestClient
 
-from mail_cadence.database import get_connection, init_db, schema_version
+from mail_cadence.database import SCHEMA_VERSION, get_connection, init_db, schema_version
 from mail_cadence.execution_store import (
     ClaimRequest,
     ClaimStatus,
@@ -351,7 +351,7 @@ def test_migration_adds_the_column_and_old_executions_get_a_derived_context(
     with closing(get_connection(db_path)) as conn:
         init_db(conn)
         repo = DatabaseRepository(conn)
-        assert schema_version(conn) == 7
+        assert schema_version(conn) == SCHEMA_VERSION
         assert window_claim.execution_id is not None
         assert manual_claim.execution_id is not None
         window_context = repo.send_context(window_claim.execution_id, "Europe/Warsaw")
@@ -368,3 +368,50 @@ def test_send_context_of_a_missing_execution_raises(tmp_path: Path) -> None:
     db_path = _prepare(tmp_path, HourWindow(start="06:00", end="08:00"))
     with closing(get_connection(db_path)) as conn, pytest.raises(LookupError):
         DatabaseRepository(conn).send_context(999, "UTC")
+
+
+@pytest.mark.parametrize(
+    ("window_start_utc", "expected"),
+    [
+        # 06:00 in Warsaw on 2026-10-28: yesterday, previous month.
+        (datetime(2026, 10, 28, 5, 0, tzinfo=UTC), "Y=27.10.2026 M=09.2026 W=Wednesday 06:00"),
+        # 00:30 in Warsaw on 2026-01-01 is still 2025 in UTC; the local day counts.
+        (datetime(2025, 12, 31, 23, 30, tzinfo=UTC), "Y=31.12.2025 M=12.2025 W=Thursday 00:30"),
+    ],
+    ids=["mid-month", "new-year"],
+)
+def test_date_filters_on_the_send_context(
+    tmp_path: Path, window_start_utc: datetime, expected: str
+) -> None:
+    (tmp_path / "body.html.j2").write_text(
+        "<p>Y={{ cadence.date | add_days(-1) | date('%d.%m.%Y') }} "
+        "M={{ cadence.date | month_start | add_months(-1) | date('%m.%Y') }} "
+        "W={{ cadence.window_start | date('%A %H:%M') }}</p>",
+        encoding="utf-8",
+    )
+    window = (window_start_utc, window_start_utc)
+    context = SendContext.build("T1", "window", "Europe/Warsaw", window, datetime.now(UTC))
+
+    body = TemplateRenderer(tmp_path).render_task_body(_task(), context)
+
+    assert body == f"<p>{expected}</p>"
+
+
+@pytest.mark.parametrize(
+    ("variables", "expected"),
+    [
+        ([], "dispatch email for 2026-10-28."),
+        ([ContextVar(name="report_date", value="2026-10-17")], "dispatch email for 2026-10-17."),
+    ],
+    ids=["send-date", "explicit-report-date"],
+)
+def test_builtin_daily_dispatch_uses_the_send_date_unless_report_date_is_set(
+    variables: list[ContextVar], expected: str
+) -> None:
+    task = _task(variables=variables).model_copy(
+        update={"body_template": BodyTemplate(template_path="builtin:daily_dispatch.html.j2")}
+    )
+    start = datetime(2026, 10, 28, 5, 0, tzinfo=UTC)
+    context = SendContext.build("T1", "window", "Europe/Warsaw", (start, start), start)
+
+    assert expected in TemplateRenderer().render_task_body(task, context)
