@@ -3,15 +3,15 @@
 ## Supported versions
 
 Only the latest release receives fixes. Please check that a problem still occurs on the
-newest version from [Releases](https://github.com/krj29b/HardDaysEngine/releases) or
-[PyPI](https://pypi.org/project/harddaysengine/) before reporting it.
+newest version from [Releases](https://github.com/krj29b/mail-cadence/releases) or
+[PyPI](https://pypi.org/project/mail-cadence/) before reporting it.
 
 ## Reporting a vulnerability
 
 Please **do not open a public issue** for security problems.
 
 Report privately through GitHub instead:
-[Report a vulnerability](https://github.com/krj29b/HardDaysEngine/security/advisories/new)
+[Report a vulnerability](https://github.com/krj29b/mail-cadence/security/advisories/new)
 (or the **Security** tab, then **Report a vulnerability**).
 
 Include the version, your operating system, steps to reproduce, and what an attacker could
